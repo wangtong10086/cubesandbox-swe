@@ -22,6 +22,7 @@ Usage:
   cubesandbox-swe templates smoke [--dry-run] [--limit N] [--template-id ID]
   cubesandbox-swe images test [--dry-run]
   cubesandbox-swe artifacts summarize [--output PATH]
+  cubesandbox-swe hint-eval build|score|analyze|report [options]
   cubesandbox-swe doctor [--runtime] [--runtime-smoke] [--codex-runtime-smoke] [--model MODEL]
   cubesandbox-swe legacy gpt55-e2e [legacy options]
 """
@@ -110,6 +111,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_simple_legacy("images test", "test_swe_infinite_images_50", rest[1:])
     if command == "artifacts":
         return _artifacts(rest)
+    if command == "hint-eval":
+        from .hint_eval.cli import main as hint_eval_main
+
+        return hint_eval_main(rest)
     if command == "doctor":
         return doctor_main(rest)
     if command == "legacy":

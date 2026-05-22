@@ -3,7 +3,8 @@
   "generated_at": "2026-05-22T09:45:27.374266+00:00",
   "notes": [
     "Do not commit full local run outputs to ordinary Git history.",
-    "Attach complete results to a GitHub Release, object store, or dataset host."
+    "Attach complete results to a GitHub Release, object store, or dataset host.",
+    "Hint-eval experiment outputs belong under ignored results/hint_eval/."
   ],
   "policy": "large artifacts are published outside the source repository",
   "schema_version": 1,
