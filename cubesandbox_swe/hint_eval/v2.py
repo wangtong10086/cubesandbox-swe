@@ -20,6 +20,7 @@ from .trajectory import (
     ToolAction,
     TrajectoryView,
     command_paths,
+    derive_task_id,
     is_inspect_command,
     is_source_path,
     is_test_or_verify_command,
@@ -912,10 +913,7 @@ def task_key(row: dict[str, Any]) -> str | None:
 
 
 def task_id(trajectory: TrajectoryView) -> str | int | None:
-    for value in (trajectory.task.get("task_id"), trajectory.raw.get("task_id")):
-        if value is not None:
-            return value
-    return None
+    return derive_task_id(trajectory)
 
 
 def trajectory_model(trajectory: TrajectoryView) -> str | None:

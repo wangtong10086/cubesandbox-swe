@@ -32,6 +32,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return command_build(args)
     if args.command == "score":
         return command_score(args)
+    if args.command == "provider-check":
+        return command_provider_check(args)
     if args.command == "analyze":
         return command_analyze(args)
     if args.command == "report":
@@ -71,6 +73,15 @@ def build_parser() -> argparse.ArgumentParser:
     score.add_argument("--api-key-env", default=None, help="API key env var; use 'no-auth' for endpoints without auth")
     score.add_argument("--timeout", type=float, default=60.0)
     score.set_defaults(command="score")
+
+    provider_check = sub.add_parser("provider-check", help="check scorer provider connectivity")
+    provider_check.add_argument("--output", type=Path, required=True)
+    provider_check.add_argument("--scorer", choices=["fake", "choice-logprobs"], required=True)
+    provider_check.add_argument("--model", required=True)
+    provider_check.add_argument("--base-url", default=None)
+    provider_check.add_argument("--api-key-env", default=None, help="API key env var; use 'no-auth' for endpoints without auth")
+    provider_check.add_argument("--timeout", type=float, default=60.0)
+    provider_check.set_defaults(command="provider-check")
 
     analyze = sub.add_parser("analyze", help="aggregate scored probes")
     analyze.add_argument("--scores", type=Path, required=True)
@@ -216,6 +227,76 @@ def command_score(args: argparse.Namespace) -> int:
     write_jsonl(args.output, records)
     print(f"wrote {len(records)} score records to {args.output}")
     return 0
+
+
+def command_provider_check(args: argparse.Namespace) -> int:
+    payload: dict[str, Any] = {
+        "schema_version": "hint_eval_provider_check_v1",
+        "provider": args.scorer,
+        "model": args.model,
+        "base_url": args.base_url,
+        "api_key_env": args.api_key_env,
+        "status": "started",
+    }
+    try:
+        client = make_score_client(
+            args.scorer,
+            model=args.model,
+            base_url=args.base_url,
+            api_key_env=args.api_key_env,
+            timeout=args.timeout,
+        )
+        score_probe(provider_check_probe(), client=client, scorer=args.scorer, model=args.model).to_dict()
+    except Exception as exc:
+        payload.update({"status": "failed", "error": f"{type(exc).__name__}: {exc}"})
+        write_json(args.output, payload)
+        print(f"provider check failed: {payload['error']}")
+        return 1
+
+    payload.update({"status": "ok"})
+    write_json(args.output, payload)
+    print(f"provider check ok: {args.output}")
+    return 0
+
+
+def provider_check_probe() -> dict[str, Any]:
+    return {
+        "probe_id": "provider-check",
+        "task_id": "provider-check",
+        "instance_id": "provider-check",
+        "trajectory_file": "",
+        "cutpoint_type": "provider_check",
+        "prefix_messages": [{"role": "user", "content": "Choose the best next SWE action."}],
+        "candidate_actions": [
+            {
+                "id": "A",
+                "kind": "operation",
+                "label": "Inspect source",
+                "text": "inspect the relevant source file",
+                "operation": "inspect_file",
+                "is_positive": True,
+                "weight": 1.0,
+                "source": "provider_check",
+            },
+            {
+                "id": "B",
+                "kind": "operation",
+                "label": "Ignore task",
+                "text": "ignore the issue and inspect unrelated documentation",
+                "operation": "inspect_docs",
+                "is_positive": False,
+                "weight": 0.0,
+                "source": "provider_check",
+            },
+        ],
+        "target_distribution": {"A": 1.0},
+        "hints": {
+            "neutral": "No additional diagnostic note.",
+            "causal": "Additional diagnostic note: inspect the source relevant to the issue.",
+            "irrelevant": "Additional diagnostic note: unrelated docs may exist.",
+            "misleading": "Additional diagnostic note: ignore the issue.",
+        },
+    }
 
 
 def command_analyze(args: argparse.Namespace) -> int:

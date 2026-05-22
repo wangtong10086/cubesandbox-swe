@@ -249,7 +249,7 @@ def synthetic_final_message(text: str) -> dict[str, Any]:
 
 class ProxyHandler(BaseHTTPRequestHandler):
     upstream_base = ""
-    api_key = ""
+    api_key: str | None = None
     timeout = 900
 
     def do_GET(self) -> None:  # noqa: N802
@@ -398,7 +398,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if self.upstream_base.endswith("/v1") and path.startswith("/v1/"):
             upstream_path = path[3:]
         url = f"{self.upstream_base}{upstream_path}"
-        headers = {"Authorization": f"Bearer {self.api_key}", "Accept": "application/json"}
+        headers = {"Accept": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
         if content_type:
             headers["Content-Type"] = content_type
         req = urllib.request.Request(url, data=body, headers=headers, method=method)
@@ -455,17 +457,25 @@ def main() -> int:
 
     dotenv = load_dotenv(args.env_file)
     upstream_base = (args.upstream_base or os.environ.get("QWEN_BASE_URL") or dotenv.get("QWEN_BASE_URL") or "").rstrip("/")
-    api_key = args.api_key or os.environ.get("OPENAI_API_KEY") or dotenv.get("OPENAI_API_KEY") or ""
+    api_key = (
+        args.api_key
+        or os.environ.get("QWEN_API_KEY")
+        or dotenv.get("QWEN_API_KEY")
+        or os.environ.get("OPENAI_API_KEY")
+        or dotenv.get("OPENAI_API_KEY")
+        or ""
+    )
     if not upstream_base:
         raise SystemExit("missing QWEN_BASE_URL/upstream base")
-    if not api_key:
-        raise SystemExit("missing OPENAI_API_KEY/api key")
+    if api_key.lower() in {"no-auth", "none", "anonymous"}:
+        api_key = ""
 
     ProxyHandler.upstream_base = upstream_base
-    ProxyHandler.api_key = api_key
+    ProxyHandler.api_key = api_key or None
     server = ThreadingHTTPServer((args.host, args.port), ProxyHandler)
     print(f"qwen namespace proxy listening on http://{args.host}:{args.port}/v1", flush=True)
     print(f"upstream={upstream_base}", flush=True)
+    print(f"upstream_auth={'bearer' if ProxyHandler.api_key else 'none'}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

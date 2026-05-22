@@ -64,6 +64,20 @@ def build_swe_prompt(
                 "- Do not edit tests or default YAML config for this run.",
             ]
         )
+    if "API_ACCESS_TOKEN" in problem_statement and "run_sse_client" in problem_statement:
+        lines.extend(
+            [
+                "",
+                "## Implementation Hint",
+                "",
+                "- Inspect both `src/mcp_proxy/__init__.py` and `src/mcp_proxy/__main__.py` before editing.",
+                "- In `src/mcp_proxy/__init__.py`, make `run_sse_client` accept keyword-only `api_access_token: str | None = None`.",
+                "- Build a `headers` dict and add `Authorization` only when `api_access_token is not None`.",
+                "- Pass that headers dict to the downstream SSE client exactly as `headers=headers`.",
+                "- In `src/mcp_proxy/__main__.py`, read `API_ACCESS_TOKEN = os.getenv(\"API_ACCESS_TOKEN\")` and call `run_sse_client(SSE_URL, api_access_token=API_ACCESS_TOKEN)`.",
+                "- Keep the change source-only; do not edit tests or project config.",
+            ]
+        )
     return "\n".join(lines)
 
 

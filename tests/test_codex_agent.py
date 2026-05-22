@@ -12,6 +12,19 @@ def test_build_swe_prompt_points_agent_at_app() -> None:
     assert "Modify ONLY source code files under /app" in prompt
 
 
+def test_build_swe_prompt_hints_api_access_token_task() -> None:
+    prompt = build_swe_prompt(
+        "Add API_ACCESS_TOKEN support. run_sse_client accepts api_access_token.",
+        repo="sparfenyuk/mcp-proxy",
+        language="python",
+    )
+
+    assert "src/mcp_proxy/__init__.py" in prompt
+    assert "src/mcp_proxy/__main__.py" in prompt
+    assert 'os.getenv("API_ACCESS_TOKEN")' in prompt
+    assert "api_access_token=API_ACCESS_TOKEN" in prompt
+
+
 def test_parse_codex_json_output_extracts_usage_items_and_errors() -> None:
     stdout = "\n".join(
         [

@@ -88,6 +88,85 @@ def load_trajectory(path: str | Path) -> TrajectoryView:
     return TrajectoryView(Path(path), raw, task, environment if isinstance(environment, dict) else {}, attempts)
 
 
+def derive_task_id(trajectory: TrajectoryView) -> str | int | None:
+    """Recover a SWE task id from explicit fields or common artifact paths."""
+    for container in task_id_containers(trajectory):
+        if not isinstance(container, dict):
+            continue
+        for key in ("task_id", "rollout_task_id"):
+            value = normalize_task_id_value(container.get(key))
+            if value is not None:
+                return value
+
+    for container in task_id_containers(trajectory):
+        if not isinstance(container, dict):
+            continue
+        value = normalize_task_id_value(container.get("instance_id"))
+        if value is not None:
+            return value
+
+    for text in task_id_candidate_texts(trajectory):
+        value = parse_task_id_from_text(text)
+        if value is not None:
+            return value
+    return None
+
+
+def task_id_containers(trajectory: TrajectoryView) -> list[Any]:
+    raw = trajectory.raw
+    return [
+        trajectory.task,
+        raw,
+        raw.get("metadata"),
+        raw.get("extra"),
+        raw.get("source"),
+        raw.get("rollout"),
+        raw.get("final"),
+    ]
+
+
+def task_id_candidate_texts(trajectory: TrajectoryView) -> list[str]:
+    texts: list[str] = [str(trajectory.path)]
+    for container in task_id_containers(trajectory):
+        if not isinstance(container, dict):
+            continue
+        for key in (
+            "task_json",
+            "task_file",
+            "source_file",
+            "result_file",
+            "trajectory_file",
+            "rollout_bucket",
+        ):
+            value = container.get(key)
+            if isinstance(value, str):
+                texts.append(value)
+    return texts
+
+
+def normalize_task_id_value(value: Any) -> str | int | None:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.isdigit():
+            return int(stripped)
+    return None
+
+
+def parse_task_id_from_text(text: str) -> int | None:
+    patterns = (
+        r"(?:^|[/_-])task[_-]?0*(\d{3,})(?:\D|$)",
+        r"(?:^|[/_-])SWE-INFINITE[_-]0*(\d{3,})(?:\D|$)",
+        r"(?:^|/)runs/0*(\d{3,})(?:/|$)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return int(match.group(1))
+    return None
+
+
 def normalize_attempt(attempt: dict[str, Any]) -> AttemptView:
     events = attempt.get("codex_events")
     if not isinstance(events, list):

@@ -14,7 +14,7 @@ def test_hint_eval_help_commands(capsys) -> None:
     assert main(["hint-eval", "--help"]) == 0
     assert "build" in capsys.readouterr().out
 
-    for command in ("build", "score", "analyze", "report"):
+    for command in ("build", "score", "provider-check", "analyze", "report"):
         assert main(["hint-eval", command, "--help"]) == 0
         assert f"hint-eval {command}" in capsys.readouterr().out
 
@@ -110,3 +110,23 @@ def test_fixture_pipeline_build_score_analyze_report(tmp_path: Path) -> None:
         ]
     ) == 0
     assert "# Hint-Invariant SWE Offline Evaluation" in report.read_text(encoding="utf-8")
+
+
+def test_provider_check_writes_status(tmp_path: Path) -> None:
+    output = tmp_path / "provider.json"
+
+    assert main(
+        [
+            "hint-eval",
+            "provider-check",
+            "--output",
+            str(output),
+            "--scorer",
+            "fake",
+            "--model",
+            "fake-model",
+        ]
+    ) == 0
+
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["status"] == "ok"
