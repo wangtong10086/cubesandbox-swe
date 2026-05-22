@@ -63,7 +63,7 @@ class ChoiceLogprobsClient(ScoreClient):
         self,
         *,
         base_url: str,
-        api_key: str,
+        api_key: str | None,
         model: str,
         timeout: float = 60.0,
         trust_env: bool = True,
@@ -100,7 +100,7 @@ class ChoiceLogprobsClient(ScoreClient):
             "logprobs": True,
             "top_logprobs": max(20, len(labels)),
         }
-        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        headers = auth_headers(self.api_key)
         with httpx.Client(timeout=self.timeout, trust_env=self.trust_env) as client:
             response = client.post(f"{self.base_url}/chat/completions", headers=headers, json=payload)
         response.raise_for_status()
@@ -124,7 +124,7 @@ class ChoiceLogprobsClient(ScoreClient):
             "temperature": 0,
             "max_tokens": 512,
         }
-        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        headers = auth_headers(self.api_key)
         with httpx.Client(timeout=self.timeout, trust_env=self.trust_env) as client:
             response = client.post(f"{self.base_url}/chat/completions", headers=headers, json=payload)
         response.raise_for_status()
@@ -147,9 +147,10 @@ def make_score_client(
     if scorer == "choice-logprobs":
         if not base_url:
             raise ValueError("--base-url is required for choice-logprobs")
+        no_auth = (api_key_env or "").lower() in {"no-auth", "none", "anonymous"}
         env_name = api_key_env or "OPENAI_API_KEY"
-        api_key = os.environ.get(env_name)
-        if not api_key:
+        api_key = None if no_auth else os.environ.get(env_name)
+        if not no_auth and not api_key:
             raise ValueError(f"{env_name} must be set for choice-logprobs")
         return ChoiceLogprobsClient(base_url=base_url, api_key=api_key, model=model, timeout=timeout)
     raise ValueError(f"unsupported scorer: {scorer}")
@@ -233,6 +234,13 @@ def extract_choice_logprobs(data: dict[str, Any], labels: list[str]) -> dict[str
         if token and isinstance(entry.get("logprob"), (int, float)):
             result[token] = float(entry["logprob"])
     return result
+
+
+def auth_headers(api_key: str | None) -> dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
 
 
 def extract_choice_completion(data: dict[str, Any], labels: list[str]) -> str | None:

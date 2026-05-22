@@ -116,7 +116,7 @@ def check_template_smoke(args: argparse.Namespace) -> Check:
     result = smoke.run_smoke(
         image,
         template_id,
-        timeout=args.timeout,
+        timeout=int(args.timeout),
         command=args.smoke_command,
         exec_backend="cubecli",
         cubecli=args.cubecli,

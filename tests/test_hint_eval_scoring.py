@@ -1,9 +1,12 @@
 from cubesandbox_swe.hint_eval.scoring import (
+    auth_headers,
     extract_choice_completion,
     extract_choice_logprobs,
+    make_score_client,
     point_distribution,
     uniform_distribution,
 )
+from cubesandbox_swe.hint_eval.scoring import ChoiceLogprobsClient
 
 
 def test_extract_choice_logprobs_accepts_punctuated_label_tokens() -> None:
@@ -48,3 +51,20 @@ def test_point_distribution_is_nearly_one_hot() -> None:
 
 def test_uniform_distribution_sums_to_one() -> None:
     assert uniform_distribution(["A", "B"]) == {"A": 0.5, "B": 0.5}
+
+
+def test_auth_headers_omits_authorization_without_api_key() -> None:
+    assert auth_headers(None) == {"Content-Type": "application/json"}
+    assert auth_headers("secret") == {"Content-Type": "application/json", "Authorization": "Bearer secret"}
+
+
+def test_make_score_client_supports_no_auth_endpoint() -> None:
+    client = make_score_client(
+        "choice-logprobs",
+        model="qwen-test",
+        base_url="http://example.test/v1",
+        api_key_env="no-auth",
+    )
+
+    assert isinstance(client, ChoiceLogprobsClient)
+    assert client.api_key is None

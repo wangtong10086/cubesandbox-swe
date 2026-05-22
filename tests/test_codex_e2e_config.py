@@ -86,6 +86,13 @@ def test_build_codex_config_with_cubesandbox_mcp_does_not_embed_api_key() -> Non
     assert "cubesandbox_swe.cubesandbox_mcp" in config
 
 
+def test_model_credentials_uses_no_auth_for_local_proxy(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://127.0.0.1:18088/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "host-secret")
+
+    assert e2e.model_credentials() == ("http://127.0.0.1:18088/v1", "no-auth")
+
+
 def test_preflight_codex_model_runs_codex(monkeypatch) -> None:
     calls = []
 

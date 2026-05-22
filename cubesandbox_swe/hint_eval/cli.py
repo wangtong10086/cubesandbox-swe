@@ -68,7 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
     score.add_argument("--scorer", choices=["fake", "choice-logprobs"], required=True)
     score.add_argument("--model", required=True)
     score.add_argument("--base-url", default=None)
-    score.add_argument("--api-key-env", default=None)
+    score.add_argument("--api-key-env", default=None, help="API key env var; use 'no-auth' for endpoints without auth")
     score.add_argument("--timeout", type=float, default=60.0)
     score.set_defaults(command="score")
 

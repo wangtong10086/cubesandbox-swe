@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from urllib.parse import urlparse
 
 from cubesandbox_swe.codex_agent import build_swe_prompt, parse_codex_json_output
 from cubesandbox_swe.cubesandbox_mcp import DEFAULT_CUBECLI, CubeSandboxExecutor
@@ -120,13 +121,22 @@ def codex_process_env(args: argparse.Namespace, api_key: str, codex_home: Path) 
 
 
 def model_credentials() -> tuple[str, str]:
-    api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("CHUTES_API_KEY")
     api_base = os.environ.get("OPENAI_BASE_URL") or os.environ.get("CHUTES_BASE_URL") or ""
-    if not api_key:
-        raise RuntimeError(".env must set OPENAI_API_KEY or CHUTES_API_KEY")
     if not api_base:
         raise RuntimeError(".env must set OPENAI_BASE_URL or CHUTES_BASE_URL")
+    if endpoint_uses_local_no_auth(api_base):
+        return api_base.rstrip("/"), "no-auth"
+
+    api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("CHUTES_API_KEY")
+    if not api_key:
+        raise RuntimeError(".env must set OPENAI_API_KEY or CHUTES_API_KEY")
     return api_base.rstrip("/"), api_key
+
+
+def endpoint_uses_local_no_auth(api_base: str) -> bool:
+    parsed = urlparse(api_base)
+    host = (parsed.hostname or "").lower()
+    return host in {"127.0.0.1", "localhost", "::1"}
 
 
 def cubesandbox_mcp_command_args(args: argparse.Namespace, sandbox_id: str) -> list[str]:
@@ -218,6 +228,24 @@ def last_codex_json_error(stdout: str) -> str:
     return last_error
 
 
+def recover_cube_diff_patch(conversation: list[dict[str, Any]]) -> str:
+    for item in reversed(conversation):
+        if item.get("type") != "mcp_tool_call" or item.get("tool") != "cube_diff":
+            continue
+        result = item.get("result") if isinstance(item.get("result"), dict) else {}
+        for content in result.get("content") or []:
+            if not isinstance(content, dict) or content.get("type") != "text":
+                continue
+            try:
+                payload = json.loads(str(content.get("text") or ""))
+            except json.JSONDecodeError:
+                continue
+            stdout = str(payload.get("stdout") or "").lstrip()
+            if stdout.strip():
+                return stdout.rstrip("\n") + "\n"
+    return ""
+
+
 def stringify_process_output(value: Any) -> str:
     if value is None:
         return ""
@@ -236,7 +264,7 @@ def preflight_codex_model(args: argparse.Namespace) -> dict[str, Any]:
         raise RuntimeError("codex CLI was not found on PATH")
 
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="codex-preflight-", dir=RUNS_DIR) as tmp_dir:
+    with tempfile.TemporaryDirectory(prefix="codex-preflight-", dir=RUNS_DIR, ignore_cleanup_errors=True) as tmp_dir:
         codex_home = Path(tmp_dir)
         control_dir = codex_home / "control"
         control_dir.mkdir()
@@ -296,6 +324,10 @@ def build_cubesandbox_runtime_prompt(base_prompt: str) -> str:
         "- cube_read_file: read files from /app inside CubeSandbox.\n"
         "- cube_apply_patch: apply a git patch to /app inside CubeSandbox.\n"
         "- cube_diff: inspect the current source diff in /app inside CubeSandbox.\n"
+        "This is a single-turn execution: do not end with a plan, status update, or note that you will inspect more.\n"
+        "If you need more information, call another CubeSandbox tool in the same response.\n"
+        "Avoid reading huge files in full; use targeted grep/sed commands for config or documentation.\n"
+        "Only provide a final assistant message after you have applied a patch and inspected a non-empty cube_diff.\n"
         "When you are finished, leave the source changes in /app and respond briefly.\n\n"
         f"{base_prompt}"
     )
@@ -384,6 +416,8 @@ def solve_cubesandbox_runtime(args: argparse.Namespace) -> dict:
 
         diff = executor.diff(DEFAULT_DIFF_FILTER)
         patch = diff["stdout"].lstrip()
+        if (not patch.strip() or (patch.startswith("diff --git") and "\n@@" not in patch)) and conversation:
+            patch = recover_cube_diff_patch(conversation) or patch
         if patch:
             patch = patch.rstrip("\n") + "\n"
 

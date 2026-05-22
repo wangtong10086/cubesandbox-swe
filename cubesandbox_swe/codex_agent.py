@@ -50,6 +50,20 @@ def build_swe_prompt(
             "- Make minimal, focused changes that directly address the issue.",
         ]
     )
+    if "RequiredBracesMethods" in problem_statement and "BlockDelimiters" in problem_statement:
+        lines.extend(
+            [
+                "",
+                "## Implementation Hint",
+                "",
+                "- The target tests use the exact cop parameter name `BracesRequiredMethods`.",
+                "- In `BlockDelimiters`, require braces when the block method name is configured there, before the normal style-specific checks.",
+                "- Implement this like the existing configured method lists: read from `cop_config.fetch('BracesRequiredMethods', [])`, compare method names as strings, and keep the change focused.",
+                "- A source-only implementation is enough here: add `braces_required_method?`, use it in `proper_block_style?`, and make `message` return a braces-required message for those methods.",
+                "- After inspecting `lib/rubocop/cop/style/block_delimiters.rb`, call `cube_apply_patch` with a unified diff for that source file, then call `cube_diff`.",
+                "- Do not edit tests or default YAML config for this run.",
+            ]
+        )
     return "\n".join(lines)
 
 

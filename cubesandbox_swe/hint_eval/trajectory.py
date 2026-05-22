@@ -110,21 +110,54 @@ def extract_tool_actions(events: list[Any]) -> list[ToolAction]:
         if not isinstance(event, dict) or event.get("type") != "item.completed":
             continue
         item = event.get("item")
-        if not isinstance(item, dict) or item.get("type") != "mcp_tool_call":
+        if not isinstance(item, dict):
             continue
-        tool = item.get("tool")
-        arguments = item.get("arguments")
-        if not isinstance(tool, str) or not isinstance(arguments, dict):
-            continue
-        actions.append(
-            ToolAction(
-                index=index,
-                tool=tool,
-                arguments=arguments,
-                status=item.get("status") if isinstance(item.get("status"), str) else None,
-                result_text=extract_result_text(item),
+        if item.get("type") == "mcp_tool_call":
+            tool = item.get("tool")
+            arguments = item.get("arguments")
+            if not isinstance(tool, str) or not isinstance(arguments, dict):
+                continue
+            actions.append(
+                ToolAction(
+                    index=index,
+                    tool=tool,
+                    arguments=arguments,
+                    status=item.get("status") if isinstance(item.get("status"), str) else None,
+                    result_text=extract_result_text(item),
+                )
             )
-        )
+        elif item.get("type") == "command_execution":
+            command = item.get("command")
+            if not isinstance(command, str):
+                continue
+            actions.append(
+                ToolAction(
+                    index=index,
+                    tool="cube_run",
+                    arguments={"command": command},
+                    status=item.get("status") if isinstance(item.get("status"), str) else None,
+                    result_text=str(item.get("aggregated_output") or ""),
+                )
+            )
+        elif item.get("type") == "file_change":
+            changes = item.get("changes")
+            if not isinstance(changes, list):
+                continue
+            for change in changes:
+                if not isinstance(change, dict):
+                    continue
+                path = change.get("path")
+                if not isinstance(path, str):
+                    continue
+                actions.append(
+                    ToolAction(
+                        index=index,
+                        tool="cube_apply_patch",
+                        arguments={"path": normalize_repo_path(path)},
+                        status=item.get("status") if isinstance(item.get("status"), str) else None,
+                        result_text=str(change.get("kind") or ""),
+                    )
+                )
     return actions
 
 
@@ -178,7 +211,10 @@ def prefix_messages(attempt: AttemptView, before_event_index: int, *, limit: int
 
 
 def normalize_repo_path(path: str) -> str:
-    return path.removeprefix("./").removeprefix("/app/").strip()
+    clean = path.strip()
+    if "/app/" in clean:
+        clean = clean.split("/app/", 1)[1]
+    return clean.removeprefix("./").removeprefix("/app/").strip()
 
 
 def is_source_path(path: str) -> bool:
