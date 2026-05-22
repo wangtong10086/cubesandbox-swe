@@ -24,7 +24,7 @@ classifiers = [
   "Topic :: System :: Distributed Computing",
 ]
 dependencies = [
-  "httpx>=0.24",
+  "httpx[socks]>=0.24",
 ]
 
 [project.urls]

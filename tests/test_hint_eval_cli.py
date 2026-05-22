@@ -18,6 +18,10 @@ def test_hint_eval_help_commands(capsys) -> None:
         assert main(["hint-eval", command, "--help"]) == 0
         assert f"hint-eval {command}" in capsys.readouterr().out
 
+    for command in ("collect-prefixes", "support", "build-onpolicy", "compare-prefix-groups"):
+        assert main(["hint-eval", command, "--help"]) == 0
+        assert f"hint-eval {command}" in capsys.readouterr().out
+
 
 def test_fixture_pipeline_build_score_analyze_report(tmp_path: Path) -> None:
     probes = tmp_path / "probes.jsonl"

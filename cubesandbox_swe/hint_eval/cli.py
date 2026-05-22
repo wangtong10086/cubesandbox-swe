@@ -17,6 +17,7 @@ from .report import write_report
 from .schemas import Probe, require_hint_conditions
 from .scoring import make_score_client, score_probe
 from .trajectory import AttemptView, TrajectoryView, load_trajectory, prefix_messages
+from .v2 import build_onpolicy_probes, collect_prefixes, compare_prefix_groups, compute_support
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -35,6 +36,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         return command_analyze(args)
     if args.command == "report":
         return command_report(args)
+    if args.command == "collect-prefixes":
+        return command_collect_prefixes(args)
+    if args.command == "support":
+        return command_support(args)
+    if args.command == "build-onpolicy":
+        return command_build_onpolicy(args)
+    if args.command == "compare-prefix-groups":
+        return command_compare_prefix_groups(args)
     parser.print_help()
     return 0
 
@@ -77,6 +86,40 @@ def build_parser() -> argparse.ArgumentParser:
     report_parser.add_argument("--scores", type=Path, required=True)
     report_parser.add_argument("--output", type=Path, required=True)
     report_parser.set_defaults(command="report")
+
+    collect = sub.add_parser("collect-prefixes", help="collect V2 teacher and student prefixes")
+    collect.add_argument("--teacher-trajectory-glob", action="append", required=True)
+    collect.add_argument("--student-trajectory-glob", action="append", required=True)
+    collect.add_argument("--online-results-glob", action="append", default=[])
+    collect.add_argument("--output", type=Path, required=True)
+    collect.add_argument("--max-prefixes-per-trajectory", type=int, default=4)
+    collect.add_argument("--seed", type=int, default=0)
+    collect.set_defaults(command="collect-prefixes")
+
+    support = sub.add_parser("support", help="compute V2 prefix support diagnostics")
+    support.add_argument("--prefixes", type=Path, required=True)
+    support.add_argument("--output", type=Path, required=True)
+    support.add_argument("--student-model", required=True)
+    support.set_defaults(command="support")
+
+    build_onpolicy = sub.add_parser("build-onpolicy", help="build V2 on-policy-aware probes")
+    build_onpolicy.add_argument("--prefixes", type=Path, required=True)
+    build_onpolicy.add_argument("--support", type=Path, required=True)
+    build_onpolicy.add_argument("--output", type=Path, required=True)
+    build_onpolicy.add_argument("--max-candidates", type=int, default=4)
+    build_onpolicy.add_argument("--hint-strength", choices=["l1", "l2", "l3"], default="l2")
+    build_onpolicy.add_argument("--seed", type=int, default=0)
+    build_onpolicy.set_defaults(command="build-onpolicy")
+
+    compare = sub.add_parser("compare-prefix-groups", help="compare V2 metrics by prefix group")
+    compare.add_argument("--scores", type=Path, required=True)
+    compare.add_argument("--online-results-glob", action="append", default=[])
+    compare.add_argument("--output", type=Path, required=True)
+    compare.add_argument("--markdown", type=Path, default=None)
+    compare.add_argument("--lambda", dest="lambda_", type=float, default=0.5)
+    compare.add_argument("--mu", type=float, default=0.25)
+    compare.add_argument("--nu", type=float, default=0.25)
+    compare.set_defaults(command="compare-prefix-groups")
     return parser
 
 
@@ -191,6 +234,54 @@ def command_analyze(args: argparse.Namespace) -> int:
 def command_report(args: argparse.Namespace) -> int:
     out = write_report(args.summary, args.scores, args.output)
     print(f"wrote report to {out}")
+    return 0
+
+
+def command_collect_prefixes(args: argparse.Namespace) -> int:
+    records = collect_prefixes(
+        teacher_globs=args.teacher_trajectory_glob,
+        student_globs=args.student_trajectory_glob,
+        online_globs=args.online_results_glob,
+        output=args.output,
+        max_prefixes_per_trajectory=args.max_prefixes_per_trajectory,
+        seed=args.seed,
+    )
+    print(f"wrote {len(records)} prefixes to {args.output}")
+    return 0
+
+
+def command_support(args: argparse.Namespace) -> int:
+    records = compute_support(args.prefixes, output=args.output, student_model=args.student_model)
+    print(f"wrote {len(records)} support records to {args.output}")
+    return 0
+
+
+def command_build_onpolicy(args: argparse.Namespace) -> int:
+    probes = build_onpolicy_probes(
+        prefixes_path=args.prefixes,
+        support_path=args.support,
+        output=args.output,
+        max_candidates=args.max_candidates,
+        hint_strength=args.hint_strength,
+        seed=args.seed,
+    )
+    print(f"wrote {len(probes)} on-policy probes to {args.output}")
+    return 0
+
+
+def command_compare_prefix_groups(args: argparse.Namespace) -> int:
+    compare_prefix_groups(
+        scores_path=args.scores,
+        online_globs=args.online_results_glob,
+        output=args.output,
+        markdown=args.markdown,
+        lambda_=args.lambda_,
+        mu=args.mu,
+        nu=args.nu,
+    )
+    print(f"wrote prefix-group comparison to {args.output}")
+    if args.markdown:
+        print(f"wrote prefix-group markdown to {args.markdown}")
     return 0
 
 

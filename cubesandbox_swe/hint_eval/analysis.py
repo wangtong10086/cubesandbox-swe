@@ -36,6 +36,9 @@ def analyze_scores(
         "by_task": grouped_aggregates(probe_rows, "task_id"),
         "by_model": grouped_aggregates(probe_rows, "model"),
         "by_cutpoint_type": grouped_aggregates(probe_rows, "cutpoint_type"),
+        "by_prefix_group": grouped_aggregates(probe_rows, "prefix_group"),
+        "by_prefix_source": grouped_aggregates(probe_rows, "prefix_source"),
+        "by_support_bucket": grouped_aggregates(probe_rows, "support_bucket"),
         "online": {
             "result_count": len(online_scores),
             "joined_probe_count": len(joined),

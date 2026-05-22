@@ -13,6 +13,7 @@ CutpointType = Literal[
     "diagnosis",
     "edit_decision",
     "verification",
+    "stop_decision",
 ]
 
 HINT_CONDITIONS: tuple[HintCondition, ...] = ("neutral", "causal", "irrelevant", "misleading")
@@ -80,6 +81,13 @@ class ScoreRecord:
     hints: dict[str, str]
     condition_scores: dict[str, dict[str, float]]
     trajectory_file: str | None = None
+    prefix_id: str | None = None
+    prefix_source: str | None = None
+    support_bucket: str | None = None
+    prefix_group: str | None = None
+    oracle_source: str | None = None
+    trajectory_resolved: bool | None = None
+    candidate_diagnostics: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -96,3 +104,49 @@ def normalize_distribution(weights: dict[str, float]) -> dict[str, float]:
     if total <= 0:
         raise ValueError("distribution has no positive mass")
     return {key: max(0.0, float(weight)) / total for key, weight in weights.items()}
+
+
+@dataclass
+class PrefixRecord:
+    schema_version: str
+    prefix_id: str
+    task_id: str | int | None
+    instance_id: str | None
+    repo: str | None
+    prefix_source: str
+    trajectory_file: str
+    trajectory_model: str | None
+    trajectory_resolved: bool | None
+    cutpoint_type: str
+    cutpoint_index: int
+    attempt: int
+    prefix_messages: list[dict[str, Any]]
+    observed_state_features: dict[str, Any]
+    future_actions: list[dict[str, Any]]
+    patch_metadata: dict[str, Any]
+    online_result: dict[str, Any]
+    source: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class SupportRecord:
+    schema_version: str
+    prefix_id: str
+    prefix_source: str
+    student_model: str
+    support_bucket: str
+    state_feature_overlap: float
+    abstract_action_overlap: float
+    opened_gold_file: bool
+    ran_failing_test: bool
+    has_patch: bool
+    has_seen_error: bool
+    student_reached_similar_state: bool
+    nearest_student_prefix_id: str | None = None
+    source: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)

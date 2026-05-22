@@ -23,6 +23,7 @@ Usage:
   cubesandbox-swe images test [--dry-run]
   cubesandbox-swe artifacts summarize [--output PATH]
   cubesandbox-swe hint-eval build|score|analyze|report [options]
+  cubesandbox-swe hint-eval collect-prefixes|support|build-onpolicy|compare-prefix-groups [options]
   cubesandbox-swe doctor [--runtime] [--runtime-smoke] [--codex-runtime-smoke] [--model MODEL]
   cubesandbox-swe legacy gpt55-e2e [legacy options]
 """

@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 import json
 import math
 import os
+import re
 from typing import Any
 
 import httpx
@@ -58,11 +59,20 @@ class FakeScoreClient(ScoreClient):
 class ChoiceLogprobsClient(ScoreClient):
     """OpenAI-compatible chat-completions scorer using top logprobs for choice labels."""
 
-    def __init__(self, *, base_url: str, api_key: str, model: str, timeout: float = 60.0) -> None:
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        api_key: str,
+        model: str,
+        timeout: float = 60.0,
+        trust_env: bool = True,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
         self.timeout = timeout
+        self.trust_env = trust_env
 
     def score_candidates(
         self,
@@ -75,27 +85,53 @@ class ChoiceLogprobsClient(ScoreClient):
         del condition, target_distribution
         labels = [candidate.id for candidate in candidates]
         choice_prompt = format_choice_prompt(prompt, candidates)
+        system_prompt = (
+            "Choose the best candidate id. "
+            f"Reply with exactly one of: {', '.join(labels)}. Do not explain."
+        )
         payload = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": "Choose the best candidate id. Reply with one label only."},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": choice_prompt},
             ],
             "temperature": 0,
             "max_tokens": 1,
             "logprobs": True,
-            "top_logprobs": max(5, len(labels)),
+            "top_logprobs": max(20, len(labels)),
         }
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
-        with httpx.Client(timeout=self.timeout, trust_env=False) as client:
+        with httpx.Client(timeout=self.timeout, trust_env=self.trust_env) as client:
             response = client.post(f"{self.base_url}/chat/completions", headers=headers, json=payload)
         response.raise_for_status()
         data = response.json()
         logprobs = extract_choice_logprobs(data, labels)
+        if not logprobs:
+            return self.score_candidates_by_completion(system_prompt, choice_prompt, labels)
         if set(labels) - set(logprobs):
-            missing = sorted(set(labels) - set(logprobs))
-            raise RuntimeError(f"provider did not return logprobs for candidate labels: {', '.join(missing)}")
+            floor = min(logprobs.values()) - 20.0
+            for missing in set(labels) - set(logprobs):
+                logprobs[missing] = floor
         return softmax(logprobs)
+
+    def score_candidates_by_completion(self, system_prompt: str, choice_prompt: str, labels: list[str]) -> dict[str, float]:
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": choice_prompt},
+            ],
+            "temperature": 0,
+            "max_tokens": 512,
+        }
+        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        with httpx.Client(timeout=self.timeout, trust_env=self.trust_env) as client:
+            response = client.post(f"{self.base_url}/chat/completions", headers=headers, json=payload)
+        response.raise_for_status()
+        label = extract_choice_completion(response.json(), labels)
+        if not label:
+            return uniform_distribution(labels)
+        return point_distribution(label, labels)
 
 
 def make_score_client(
@@ -144,6 +180,13 @@ def score_probe(probe: dict[str, Any], *, client: ScoreClient, scorer: str, mode
         hints=probe["hints"],
         condition_scores=condition_scores,
         trajectory_file=probe.get("trajectory_file"),
+        prefix_id=probe.get("prefix_id"),
+        prefix_source=probe.get("prefix_source"),
+        support_bucket=probe.get("support_bucket"),
+        prefix_group=probe.get("prefix_group"),
+        oracle_source=probe.get("oracle_source"),
+        trajectory_resolved=probe.get("trajectory_resolved"),
+        candidate_diagnostics=probe.get("candidate_diagnostics") or {},
     )
 
 
@@ -186,10 +229,64 @@ def extract_choice_logprobs(data: dict[str, Any], labels: list[str]) -> dict[str
     for entry in top:
         if not isinstance(entry, dict):
             continue
-        token = str(entry.get("token") or "").strip()
-        if token in label_set and isinstance(entry.get("logprob"), (int, float)):
+        token = normalize_choice_label(str(entry.get("token") or ""), label_set)
+        if token and isinstance(entry.get("logprob"), (int, float)):
             result[token] = float(entry["logprob"])
     return result
+
+
+def extract_choice_completion(data: dict[str, Any], labels: list[str]) -> str | None:
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return None
+    message = choices[0].get("message") if isinstance(choices[0], dict) else None
+    if not isinstance(message, dict):
+        return None
+    label_set = set(labels)
+    content = message.get("content")
+    if isinstance(content, str):
+        label = normalize_choice_label(content, label_set)
+        if label:
+            return label
+        for match in re.finditer(r"\b[A-Z]\b", content):
+            label = normalize_choice_label(match.group(0), label_set)
+            if label:
+                return label
+    for key in ("reasoning", "reasoning_content"):
+        reasoning = message.get(key)
+        if not isinstance(reasoning, str):
+            continue
+        matches = list(re.finditer(r"(?:answer|option|candidate|output|reply)\s*(?:is|:|：)?\s*([A-Z])", reasoning, re.I))
+        for match in reversed(matches):
+            label = normalize_choice_label(match.group(1).upper(), label_set)
+            if label:
+                return label
+    return None
+
+
+def normalize_choice_label(text: str, labels: set[str]) -> str | None:
+    stripped = text.strip().strip("`'\"()[]{}:：,，.。")
+    if stripped in labels:
+        return stripped
+    match = re.search(r"\b([A-Z])\b", stripped)
+    if match and match.group(1) in labels:
+        return match.group(1)
+    return None
+
+
+def point_distribution(label: str, labels: list[str]) -> dict[str, float]:
+    if len(labels) == 1:
+        return {label: 1.0}
+    epsilon = 1e-6
+    off_target = epsilon / (len(labels) - 1)
+    return {candidate: (1.0 - epsilon if candidate == label else off_target) for candidate in labels}
+
+
+def uniform_distribution(labels: list[str]) -> dict[str, float]:
+    if not labels:
+        return {}
+    probability = 1.0 / len(labels)
+    return {label: probability for label in labels}
 
 
 def softmax(logits: dict[str, float]) -> dict[str, float]:

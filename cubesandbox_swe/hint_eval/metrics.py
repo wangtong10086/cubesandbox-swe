@@ -33,11 +33,17 @@ def probe_metrics(
     burden = l0 + lambda_ * max(0.0, g_plus) + mu * s_irrelevant + nu * max(0.0, h_misleading)
     return {
         "probe_id": score_record["probe_id"],
+        "prefix_id": score_record.get("prefix_id"),
         "task_id": score_record.get("task_id"),
         "instance_id": score_record.get("instance_id"),
         "model": score_record.get("model"),
         "scorer": score_record.get("scorer"),
         "cutpoint_type": score_record.get("cutpoint_type"),
+        "prefix_source": score_record.get("prefix_source"),
+        "support_bucket": score_record.get("support_bucket"),
+        "prefix_group": score_record.get("prefix_group"),
+        "oracle_source": score_record.get("oracle_source"),
+        "trajectory_resolved": score_record.get("trajectory_resolved"),
         "L0": l0,
         "L_plus": l_plus,
         "L_irrelevant": l_irrelevant,
@@ -46,11 +52,22 @@ def probe_metrics(
         "S_irrelevant": s_irrelevant,
         "H_misleading": h_misleading,
         "B": burden,
+        "Goodness": -burden,
     }
 
 
 def aggregate_metrics(rows: list[dict[str, Any]]) -> dict[str, float | int]:
-    metric_names = ["L0", "L_plus", "L_irrelevant", "L_misleading", "G_plus", "S_irrelevant", "H_misleading", "B"]
+    metric_names = [
+        "L0",
+        "L_plus",
+        "L_irrelevant",
+        "L_misleading",
+        "G_plus",
+        "S_irrelevant",
+        "H_misleading",
+        "B",
+        "Goodness",
+    ]
     if not rows:
         return {"count": 0, **{name: 0.0 for name in metric_names}}
     return {"count": len(rows), **{name: mean(float(row[name]) for row in rows) for name in metric_names}}

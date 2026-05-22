@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "task": {
+    "task_id": 202,
+    "instance_id": "example__repo-202",
+    "repo": "example/repo",
+    "problem_statement": "Fix add_one in src/mathlib.py."
+  },
+  "environment": {
+    "model": "qwen3.6-27b"
+  },
+  "attempts": [
+    {
+      "attempt": 1,
+      "prompt": "Use CubeSandbox tools to solve the task.",
+      "codex_events": [
+        {
+          "type": "item.completed",
+          "item": {
+            "type": "agent_message",
+            "text": "I will inspect the implementation and patch the arithmetic bug."
+          }
+        },
+        {
+          "type": "item.completed",
+          "item": {
+            "type": "mcp_tool_call",
+            "tool": "cube_read_file",
+            "arguments": {"path": "src/mathlib.py", "max_bytes": 4000},
+            "status": "completed",
+            "result": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "{\"exit_code\": 0, \"stdout\": \"def add_one(x):\\n    return x - 1\\n\", \"stderr\": \"\"}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "type": "item.completed",
+          "item": {
+            "type": "mcp_tool_call",
+            "tool": "cube_apply_patch",
+            "arguments": {
+              "patch": "diff --git a/src/mathlib.py b/src/mathlib.py\n--- a/src/mathlib.py\n+++ b/src/mathlib.py\n@@ -1,2 +1,2 @@\n def add_one(x):\n-    return x - 1\n+    return x + 1\n"
+            },
+            "status": "completed",
+            "result": {"content": [{"type": "text", "text": "{\"exit_code\": 0, \"stdout\": \"\", \"stderr\": \"\"}"}]}
+          }
+        },
+        {
+          "type": "item.completed",
+          "item": {
+            "type": "mcp_tool_call",
+            "tool": "cube_run",
+            "arguments": {"command": "pytest tests/test_mathlib.py -q"},
+            "status": "completed",
+            "result": {"content": [{"type": "text", "text": "{\"exit_code\": 0, \"stdout\": \"1 passed\\n\", \"stderr\": \"\"}"}]}
+          }
+        }
+      ],
+      "patch": "diff --git a/src/mathlib.py b/src/mathlib.py\n--- a/src/mathlib.py\n+++ b/src/mathlib.py\n@@ -1,2 +1,2 @@\n def add_one(x):\n-    return x - 1\n+    return x + 1\n"
+    }
+  ],
+  "verify": {"score": 1.0}
+}

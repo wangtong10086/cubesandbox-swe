@@ -107,6 +107,7 @@ scripts/collect_cubesandbox_codex_swe50.py --help
 - [SWE-INFINITE Workflow](docs/swe-infinite-workflow.md)
 - [Configuration](docs/configuration.md)
 - [Hint-Invariant Evaluation](docs/hint-invariant-eval.md)
+- [Hint-Invariant On-Policy Experiment](docs/hint-invariant-onpolicy-experiment.md)
 - [Validation](docs/validation.md)
 - [Artifacts](docs/artifacts.md)
 - [Development](docs/development.md)

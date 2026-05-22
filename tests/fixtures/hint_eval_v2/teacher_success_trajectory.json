@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "task": {
+    "task_id": 201,
+    "instance_id": "example__repo-201",
+    "repo": "example/repo",
+    "problem_statement": "Fix the greeting returned by src/example.py."
+  },
+  "environment": {
+    "model": "gpt-teacher"
+  },
+  "attempts": [
+    {
+      "attempt": 1,
+      "prompt": "Use CubeSandbox tools to solve the task.",
+      "codex_events": [
+        {
+          "type": "item.completed",
+          "item": {
+            "type": "agent_message",
+            "text": "I will inspect the likely source and tests."
+          }
+        },
+        {
+          "type": "item.completed",
+          "item": {
+            "type": "mcp_tool_call",
+            "tool": "cube_run",
+            "arguments": {"command": "find src tests -type f | sort"},
+            "status": "completed",
+            "result": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "{\"exit_code\": 0, \"stdout\": \"src/example.py\\ntests/test_example.py\\n\", \"stderr\": \"\"}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "type": "item.completed",
+          "item": {
+            "type": "mcp_tool_call",
+            "tool": "cube_read_file",
+            "arguments": {"path": "src/example.py", "max_bytes": 4000},
+            "status": "completed",
+            "result": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "{\"exit_code\": 0, \"stdout\": \"def greet():\\n    return 'helo'\\n\", \"stderr\": \"\"}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "type": "item.completed",
+          "item": {
+            "type": "mcp_tool_call",
+            "tool": "cube_apply_patch",
+            "arguments": {
+              "patch": "diff --git a/src/example.py b/src/example.py\n--- a/src/example.py\n+++ b/src/example.py\n@@ -1,2 +1,2 @@\n def greet():\n-    return 'helo'\n+    return 'hello'\n"
+            },
+            "status": "completed",
+            "result": {"content": [{"type": "text", "text": "{\"exit_code\": 0, \"stdout\": \"\", \"stderr\": \"\"}"}]}
+          }
+        },
+        {
+          "type": "item.completed",
+          "item": {
+            "type": "mcp_tool_call",
+            "tool": "cube_run",
+            "arguments": {"command": "pytest tests/test_example.py -q"},
+            "status": "completed",
+            "result": {"content": [{"type": "text", "text": "{\"exit_code\": 0, \"stdout\": \"1 passed\\n\", \"stderr\": \"\"}"}]}
+          }
+        }
+      ],
+      "patch": "diff --git a/src/example.py b/src/example.py\n--- a/src/example.py\n+++ b/src/example.py\n@@ -1,2 +1,2 @@\n def greet():\n-    return 'helo'\n+    return 'hello'\n"
+    }
+  ],
+  "verify": {"score": 1.0}
+}

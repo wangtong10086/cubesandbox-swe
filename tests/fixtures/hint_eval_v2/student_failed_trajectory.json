@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "task": {
+    "task_id": 201,
+    "instance_id": "example__repo-201",
+    "repo": "example/repo",
+    "problem_statement": "Fix the greeting returned by src/example.py."
+  },
+  "environment": {
+    "model": "qwen3.6-27b"
+  },
+  "attempts": [
+    {
+      "attempt": 1,
+      "prompt": "Use CubeSandbox tools to solve the task.",
+      "codex_events": [
+        {
+          "type": "item.completed",
+          "item": {
+            "type": "agent_message",
+            "text": "I will inspect files and run the failing test."
+          }
+        },
+        {
+          "type": "item.completed",
+          "item": {
+            "type": "mcp_tool_call",
+            "tool": "cube_read_file",
+            "arguments": {"path": "src/example.py", "max_bytes": 4000},
+            "status": "completed",
+            "result": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "{\"exit_code\": 0, \"stdout\": \"def greet():\\n    return 'helo'\\n\", \"stderr\": \"\"}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "type": "item.completed",
+          "item": {
+            "type": "mcp_tool_call",
+            "tool": "cube_run",
+            "arguments": {"command": "pytest tests/test_example.py -q"},
+            "status": "failed",
+            "result": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "{\"exit_code\": 1, \"stdout\": \"FAILED tests/test_example.py::test_greet\\n\", \"stderr\": \"AssertionError: hello expected\\n\"}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "type": "item.completed",
+          "item": {
+            "type": "mcp_tool_call",
+            "tool": "cube_apply_patch",
+            "arguments": {
+              "patch": "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-Example\n+Example project\n"
+            },
+            "status": "completed",
+            "result": {"content": [{"type": "text", "text": "{\"exit_code\": 0, \"stdout\": \"\", \"stderr\": \"\"}"}]}
+          }
+        }
+      ],
+      "patch": "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-Example\n+Example project\n"
+    }
+  ],
+  "verify": {"score": 0.0}
+}

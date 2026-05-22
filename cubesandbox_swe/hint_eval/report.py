@@ -43,6 +43,24 @@ def generate_report(summary_path: str | Path, scores_path: str | Path) -> str:
     for row in summary.get("by_cutpoint_type", []):
         lines.append(f"| {row.get('cutpoint_type')} | {row.get('count', 0)} | {float(row.get('B', 0.0)):.6f} |")
 
+    if any(row.get("prefix_group") not in {None, "null"} for row in summary.get("by_prefix_group", [])):
+        lines.extend(
+            [
+                "",
+                "## V2 Prefix Groups",
+                "",
+                "| Prefix group | Count | B | Goodness |",
+                "| --- | ---: | ---: | ---: |",
+            ]
+        )
+        for row in summary.get("by_prefix_group", []):
+            if row.get("prefix_group") in {None, "null"}:
+                continue
+            lines.append(
+                f"| {row.get('prefix_group')} | {row.get('count', 0)} | "
+                f"{float(row.get('B', 0.0)):.6f} | {float(row.get('Goodness', 0.0)):.6f} |"
+            )
+
     lines.extend(["", "## Online Correlation", ""])
     if correlations.get("status") == "ok":
         lines.extend(
