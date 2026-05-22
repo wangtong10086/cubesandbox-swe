@@ -26,3 +26,4 @@ def test_collect_prefixes_distinguishes_sources(tmp_path: Path) -> None:
     assert any(record["trajectory_resolved"] is False for record in records if record["prefix_source"] == "student_onpolicy")
     assert all(record["schema_version"] == "hint_eval_prefix_v2" for record in records)
     assert all("abstract_actions" in record["observed_state_features"] for record in records)
+    assert len({record["prefix_id"] for record in records}) == len(records)

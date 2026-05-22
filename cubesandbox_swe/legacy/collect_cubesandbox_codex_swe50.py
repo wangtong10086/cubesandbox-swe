@@ -277,6 +277,8 @@ def run_one(args: argparse.Namespace, job: dict[str, Any], manifest_path: Path) 
         "sandbox",
         "--max-verify-attempts",
         "1",
+        "--model-preflight-timeout",
+        str(args.model_preflight_timeout),
         "--output-dir",
         str(run_dir),
         "--runs-dir",
@@ -294,6 +296,8 @@ def run_one(args: argparse.Namespace, job: dict[str, Any], manifest_path: Path) 
         "--rollout-validator-hotkey",
         args.rollout_validator_hotkey,
     ]
+    if args.skip_model_preflight:
+        cmd.append("--skip-model-preflight")
     if args.codex_http_proxy:
         cmd.extend(["--codex-http-proxy", args.codex_http_proxy])
 
@@ -385,6 +389,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--solve-timeout", type=int, default=1800)
     parser.add_argument("--verify-timeout", type=int, default=1800)
     parser.add_argument("--run-timeout", type=int, default=4200)
+    parser.add_argument("--skip-model-preflight", action="store_true")
+    parser.add_argument("--model-preflight-timeout", type=int, default=90)
     parser.add_argument("--codex-http-proxy", default=os.environ.get("SWE_INFINITE_CODEX_HTTP_PROXY", ""))
     parser.add_argument("--rollout-miner-hotkey", default=os.environ.get("AFFINE_ROLLOUT_MINER_HOTKEY", "local-cubesandbox"))
     parser.add_argument("--rollout-validator-hotkey", default=os.environ.get("AFFINE_ROLLOUT_VALIDATOR_HOTKEY", "executor-SWE-INFINITE-local"))
@@ -419,6 +425,8 @@ def main() -> int:
         "model": args.model,
         "reasoning_effort": args.reasoning_effort,
         "wire_api": args.wire_api,
+        "skip_model_preflight": args.skip_model_preflight,
+        "model_preflight_timeout": args.model_preflight_timeout,
         "total_jobs": len(jobs),
     })
     save_manifest(manifest_path, manifest)

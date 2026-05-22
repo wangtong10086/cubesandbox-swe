@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
+import hashlib
+import json
 import math
 from pathlib import Path
+import random
 from typing import Any
 
 from .analysis import load_online_scores, online_key, online_score
@@ -13,7 +16,7 @@ from .candidates import GENERIC_DISTRACTORS, assign_ids, dedupe_candidates, file
 from .cutpoints import select_cutpoints
 from .hints import NEUTRAL_HINT, describe_candidate, leakage_flags
 from .io import expand_globs, read_json, read_jsonl, write_json, write_jsonl
-from .metrics import aggregate_metrics, kendall_tau, probe_metrics, spearman
+from .metrics import aggregate_metrics, kendall_tau, pearson, probe_metrics, spearman
 from .schemas import CandidateAction, PrefixRecord, SupportRecord, normalize_distribution, require_hint_conditions
 from .trajectory import (
     AttemptView,
@@ -290,6 +293,8 @@ def compare_prefix_groups(
     lambda_: float = 0.5,
     mu: float = 0.25,
     nu: float = 0.25,
+    bootstrap_samples: int = 0,
+    seed: int = 0,
 ) -> dict[str, Any]:
     score_records = read_jsonl(scores_path)
     rows = [probe_metrics(record, lambda_=lambda_, mu=mu, nu=nu) | extra_score_metadata(record) for record in score_records]
@@ -303,7 +308,7 @@ def compare_prefix_groups(
         "student_failure_prefix",
     ):
         members = [row for row in rows if row_in_group(row, group)]
-        group_rows.append(group_summary(group, members, online_scores))
+        group_rows.append(group_summary(group, members, online_scores, bootstrap_samples=bootstrap_samples, seed=seed))
     comparison = {
         "schema_version": "hint_eval_prefix_group_comparison_v2",
         "scores_file": str(scores_path),
@@ -689,14 +694,23 @@ def row_in_group(row: dict[str, Any], group: str) -> bool:
     return False
 
 
-def group_summary(group: str, rows: list[dict[str, Any]], online_scores: dict[str, float]) -> dict[str, Any]:
+def group_summary(
+    group: str,
+    rows: list[dict[str, Any]],
+    online_scores: dict[str, float],
+    *,
+    bootstrap_samples: int = 0,
+    seed: int = 0,
+) -> dict[str, Any]:
     joined = join_group_online(rows, online_scores)
     goodness = [row["Goodness"] for row in joined]
     online = [row["online_score"] for row in joined]
     correlations = {
         "spearman_goodness_online": spearman(goodness, online),
         "kendall_goodness_online": kendall_tau(goodness, online),
+        "pearson_goodness_online": pearson(goodness, online),
         "pairwise_accuracy": pairwise_accuracy(goodness, online),
+        "bootstrap_ci": bootstrap_correlations(goodness, online, samples=bootstrap_samples, seed=seed),
         "joined_count": len(joined),
     }
     online_values = [item["online_score"] for item in joined]
@@ -737,6 +751,37 @@ def pairwise_accuracy(goodness: list[float], online: list[float]) -> float | Non
     return None if total == 0 else correct / total
 
 
+def bootstrap_correlations(goodness: list[float], online: list[float], *, samples: int, seed: int) -> dict[str, Any]:
+    if samples <= 0 or len(goodness) < 2 or len(goodness) != len(online):
+        return {"status": "not_run"}
+    rng = random.Random(seed)
+    values: dict[str, list[float]] = {"spearman": [], "kendall": [], "pearson": [], "pairwise_accuracy": []}
+    n = len(goodness)
+    for _ in range(samples):
+        indexes = [rng.randrange(n) for _ in range(n)]
+        g_sample = [goodness[index] for index in indexes]
+        o_sample = [online[index] for index in indexes]
+        metrics = {
+            "spearman": spearman(g_sample, o_sample),
+            "kendall": kendall_tau(g_sample, o_sample),
+            "pearson": pearson(g_sample, o_sample),
+            "pairwise_accuracy": pairwise_accuracy(g_sample, o_sample),
+        }
+        for key, value in metrics.items():
+            if value is not None:
+                values[key].append(float(value))
+    return {key: percentile_ci(items) for key, items in values.items()}
+
+
+def percentile_ci(values: list[float]) -> dict[str, Any]:
+    if not values:
+        return {"status": "insufficient_data", "low": None, "high": None, "samples": 0}
+    ordered = sorted(values)
+    low = ordered[max(0, min(len(ordered) - 1, int(0.025 * (len(ordered) - 1))))]
+    high = ordered[max(0, min(len(ordered) - 1, int(0.975 * (len(ordered) - 1))))]
+    return {"status": "ok", "low": low, "high": high, "samples": len(ordered)}
+
+
 def extra_score_metadata(record: dict[str, Any]) -> dict[str, Any]:
     return {
         "prefix_id": record.get("prefix_id"),
@@ -773,6 +818,7 @@ def baseline_summary(rows: list[dict[str, Any]], online_scores: dict[str, float]
     return {
         "status": "ok",
         "goodness_spearman": spearman([row["Goodness"] for row in joined], online),
+        "goodness_pearson": pearson([row["Goodness"] for row in joined], online),
         "negative_l0_spearman": spearman([-row["L0"] for row in joined], online),
         "negative_lplus_spearman": spearman([-row["L_plus"] for row in joined], online),
         "hint_gain_spearman": spearman([row["G_plus"] for row in joined], online),
@@ -929,7 +975,13 @@ def string_or_none(value: Any) -> str | None:
 
 def make_prefix_id(trajectory: TrajectoryView, prefix_source: str, attempt: AttemptView, cutpoint_index: int, seed: int) -> str:
     stem = trajectory.path.stem.replace(" ", "_")
-    return f"{prefix_source}:{stem}:a{attempt.attempt}:c{cutpoint_index}:s{seed}"
+    identity = {
+        "path": trajectory.path.as_posix(),
+        "task_id": task_id(trajectory),
+        "instance_id": string_or_none(trajectory.task.get("instance_id")),
+    }
+    digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode("utf-8")).hexdigest()[:10]
+    return f"{prefix_source}:{stem}:{digest}:a{attempt.attempt}:c{cutpoint_index}:s{seed}"
 
 
 def summarize_oracle(oracle: dict[str, Any]) -> str:

@@ -22,8 +22,9 @@ Usage:
   cubesandbox-swe templates smoke [--dry-run] [--limit N] [--template-id ID]
   cubesandbox-swe images test [--dry-run]
   cubesandbox-swe artifacts summarize [--output PATH]
-  cubesandbox-swe hint-eval build|score|analyze|report [options]
-  cubesandbox-swe hint-eval collect-prefixes|support|build-onpolicy|compare-prefix-groups [options]
+  cubesandbox-swe hint-eval build|score|score-batch|analyze|report [options]
+  cubesandbox-swe hint-eval collect-prefixes|support|build-onpolicy|compare-prefix-groups|ablate [options]
+  cubesandbox-swe hint-eval export online-results [options]
   cubesandbox-swe doctor [--runtime] [--runtime-smoke] [--codex-runtime-smoke] [--model MODEL]
   cubesandbox-swe legacy gpt55-e2e [legacy options]
 """

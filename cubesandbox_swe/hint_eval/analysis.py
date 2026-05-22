@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .io import expand_globs, read_json, read_jsonl
-from .metrics import aggregate_metrics, grouped_aggregates, kendall_tau, probe_metrics, spearman
+from .metrics import aggregate_metrics, grouped_aggregates, kendall_tau, pearson, probe_metrics, spearman
 
 
 def analyze_scores(
@@ -52,13 +52,14 @@ def load_online_scores(patterns: list[str]) -> dict[str, float]:
     scores: dict[str, float] = {}
     for path in expand_globs(patterns):
         try:
-            payload = read_json(path)
+            payloads = read_jsonl(path) if path.suffix == ".jsonl" else [read_json(path)]
         except Exception:
             continue
-        key = online_key(payload)
-        score = online_score(payload)
-        if key is not None and score is not None:
-            scores[key] = score
+        for payload in payloads:
+            key = online_key(payload)
+            score = online_score(payload)
+            if key is not None and score is not None:
+                scores[key] = score
     return scores
 
 
@@ -80,6 +81,14 @@ def online_score(payload: dict[str, Any]) -> float | None:
         (payload.get("verify") or {}).get("score") if isinstance(payload.get("verify"), dict) else None,
         (payload.get("verify_result") or {}).get("score") if isinstance(payload.get("verify_result"), dict) else None,
     ]
+    final = payload.get("final") if isinstance(payload.get("final"), dict) else {}
+    if isinstance(final.get("verify"), dict):
+        candidates.append(final["verify"].get("score"))
+    attempts = payload.get("attempts") if isinstance(payload.get("attempts"), list) else []
+    for attempt in reversed(attempts):
+        if isinstance(attempt, dict) and isinstance(attempt.get("verify"), dict):
+            candidates.append(attempt["verify"].get("score"))
+            break
     for value in candidates:
         if isinstance(value, (int, float)):
             return float(value)
@@ -97,7 +106,13 @@ def join_online_scores(probe_rows: list[dict[str, Any]], online_scores: dict[str
         keys = [row.get("instance_id"), row.get("task_id")]
         for key in keys:
             if key is not None and str(key) in online_scores:
-                joined.append({"offline_B": float(row["B"]), "online_score": online_scores[str(key)]})
+                joined.append(
+                    {
+                        "offline_B": float(row["B"]),
+                        "offline_goodness": float(row["Goodness"]),
+                        "online_score": online_scores[str(key)],
+                    }
+                )
                 break
     return joined
 
@@ -110,16 +125,20 @@ def compute_correlations(joined: list[dict[str, float]]) -> dict[str, Any]:
             "kendall": None,
             "pairwise_ranking_accuracy": None,
         }
-    offline = [row["offline_B"] for row in joined]
+    goodness = [row["offline_goodness"] for row in joined]
     online = [row["online_score"] for row in joined]
-    spearman_value = spearman(offline, online)
-    kendall_value = kendall_tau(offline, online)
-    ranking_value = pairwise_ranking_accuracy(offline, online)
-    status = "ok" if any(value is not None for value in (spearman_value, kendall_value, ranking_value)) else "insufficient_data"
+    spearman_value = spearman(goodness, online)
+    kendall_value = kendall_tau(goodness, online)
+    pearson_value = pearson(goodness, online)
+    ranking_value = pairwise_ranking_accuracy(goodness, online)
+    status = "ok" if any(value is not None for value in (spearman_value, kendall_value, pearson_value, ranking_value)) else "insufficient_data"
     return {
         "status": status,
         "spearman": spearman_value,
+        "spearman_goodness_online": spearman_value,
         "kendall": kendall_value,
+        "kendall_goodness_online": kendall_value,
+        "pearson_goodness_online": pearson_value,
         "pairwise_ranking_accuracy": ranking_value,
     }
 
