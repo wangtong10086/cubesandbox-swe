@@ -1,0 +1,9 @@
+[submodule "third_party/CubeSandbox"]
+	path = third_party/CubeSandbox
+	url = https://github.com/TencentCloud/CubeSandbox.git
+	branch = master
+
+[submodule "third_party/affinetes"]
+	path = third_party/affinetes
+	url = https://github.com/AffineFoundation/affinetes.git
+	branch = main

@@ -1,0 +1,26 @@
+{
+  "external_uri": null,
+  "generated_at": "2026-05-22T09:45:27.374266+00:00",
+  "notes": [
+    "Do not commit full local run outputs to ordinary Git history.",
+    "Attach complete results to a GitHub Release, object store, or dataset host."
+  ],
+  "policy": "large artifacts are published outside the source repository",
+  "schema_version": 1,
+  "source_directories": {
+    "results": {
+      "bytes": 7161572719,
+      "exists": true,
+      "files": 422518
+    },
+    "swe-e2e-runs": {
+      "bytes": 2050900283,
+      "exists": true,
+      "files": 16726
+    }
+  },
+  "tracked_examples": [
+    "artifacts/examples/trajectory.example.json",
+    "artifacts/examples/rollout_bucket.example.json"
+  ]
+}

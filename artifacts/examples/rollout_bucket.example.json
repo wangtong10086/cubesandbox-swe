@@ -1,0 +1,23 @@
+{
+  "miner_hotkey": "local-cubesandbox",
+  "model_revision": "example-run",
+  "model": "gpt-5.5",
+  "env": "SWE-INFINITE",
+  "task_id": 1,
+  "score": 1.0,
+  "latency_ms": 0,
+  "timestamp": "2026-05-22T00:00:00+00:00",
+  "validator_hotkey": "executor-SWE-INFINITE-local",
+  "block_number": 0,
+  "signature": "",
+  "extra": {
+    "task_type": "SWE-INFINITE",
+    "agent_type": "codex",
+    "instance_id": "example__repo-1",
+    "repo": "example/repo",
+    "fix_patch": "diff --git a/example.py b/example.py\n",
+    "conversation": [],
+    "test_stats": {},
+    "usage": {}
+  }
+}

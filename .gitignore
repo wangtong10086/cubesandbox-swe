@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+build/
+dist/
+
+# Local environments and secrets
+.env
+.venv/
+venv/
+
+# Local CubeSandbox/SWE run outputs
+results/
+swe-e2e-runs/
+logs/
+*.log
+
+# Local machine/service configuration drafts
+configs/*
+!configs/README.md
+!configs/*.example
+
+# Generated archives
+*.tar
+*.tar.gz
+*.zip

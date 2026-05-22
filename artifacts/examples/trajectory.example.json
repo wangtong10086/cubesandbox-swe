@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "task": {
+    "instance_id": "example__repo-1",
+    "repo": "example/repo",
+    "problem_statement": "Example problem statement."
+  },
+  "settings": {
+    "solve_template": "swe-example-template",
+    "verify_template": "swe-example-template",
+    "model": "gpt-5.5"
+  },
+  "attempts": [
+    {
+      "attempt": 1,
+      "prompt": "Example prompt.",
+      "codex_events": [],
+      "patch": "diff --git a/example.py b/example.py\n"
+    }
+  ],
+  "verify": {
+    "score": 1.0,
+    "state_after_save": "paused",
+    "state_after_restore": "running"
+  }
+}

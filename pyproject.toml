@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cubesandbox-swe"
+version = "0.1.0"
+description = "CubeSandbox integration tools for SWE-INFINITE tasks"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{name = "cubesandbox-swe contributors"}]
+keywords = ["cubesandbox", "swe-infinite", "software-engineering", "codex", "evaluation"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Testing",
+  "Topic :: System :: Distributed Computing",
+]
+dependencies = [
+  "httpx>=0.24",
+]
+
+[project.urls]
+Homepage = "https://github.com/cubesandbox-swe/cubesandbox-swe"
+Documentation = "https://github.com/cubesandbox-swe/cubesandbox-swe/tree/main/docs"
+Source = "https://github.com/cubesandbox-swe/cubesandbox-swe"
+Issues = "https://github.com/cubesandbox-swe/cubesandbox-swe/issues"
+
+[project.optional-dependencies]
+dev = [
+  "build>=1.2",
+  "pytest>=7.0",
+  "ruff>=0.5",
+]
+
+[project.scripts]
+cubesandbox-swe = "cubesandbox_swe.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["cubesandbox_swe*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+exclude = [
+  ".venv",
+  "third_party",
+  "results",
+  "swe-e2e-runs",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = [
+  ".git",
+  ".venv",
+  "third_party",
+  "results",
+  "swe-e2e-runs",
+]
