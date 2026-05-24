@@ -94,6 +94,35 @@ cubesandbox-swe hint-eval report \
 If online verifier results are missing or too sparse, the summary and report
 still include offline metrics and mark correlation as unavailable.
 
+For the cross-model hint-sensitivity analysis used in the Qwen3.6, Affine, and
+Qwen3 32B comparison, use the repository script:
+
+```sh
+.venv/bin/python scripts/analyze_hint_sensitivity_capability.py \
+  --raw-task-limit 30 \
+  --raw-probe-limit 30
+```
+
+The generated Markdown and JSON are written under ignored `results/` paths. The
+tracked summary of the current analysis is
+[Hint Sensitivity vs SWE Capability](hint-sensitivity-capability.md).
+
+## Online Failure Classification
+
+When exporting online results, model-caused failures are assigned score `0.0` so
+they remain part of the model capability estimate:
+
+```text
+no_patch
+failed
+non-infrastructure error
+```
+
+Only platform/runtime failures such as provider routing errors, authentication
+errors, Targon/CubeSandbox availability failures, verifier crashes, or runner
+exceptions should be treated as infrastructure failures and excluded or rerun.
+This policy avoids treating "did not generate or submit a patch" as missing data.
+
 ## Valid Conclusions
 
 This evaluator can support claims about local process sensitivity on the
