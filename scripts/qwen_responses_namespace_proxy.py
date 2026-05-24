@@ -251,6 +251,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
     upstream_base = ""
     api_key: str | None = None
     timeout = 900
+    require_initial_tool_choice = True
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path in {"/health", "/ping"}:
@@ -304,7 +305,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 or has_successful_apply_patch(upstream_request.get("input"))
                 or has_apply_patch_attempt(upstream_request.get("input"))
             )
-            upstream_request["tool_choice"] = "auto" if can_finish else "required"
+            upstream_request["tool_choice"] = "auto" if can_finish or not self.require_initial_tool_choice else "required"
             if not can_finish:
                 token_cap = 8192 if force_block_delimiters_patch else 4096
                 upstream_request["max_output_tokens"] = min(
@@ -453,6 +454,11 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=18088)
     parser.add_argument("--upstream-base", default="")
     parser.add_argument("--api-key", default="")
+    parser.add_argument(
+        "--no-required-tool-choice",
+        action="store_true",
+        help="keep initial namespaced tool calls at tool_choice=auto for providers that reject required",
+    )
     args = parser.parse_args()
 
     dotenv = load_dotenv(args.env_file)
@@ -472,10 +478,20 @@ def main() -> int:
 
     ProxyHandler.upstream_base = upstream_base
     ProxyHandler.api_key = api_key or None
+    require_env = (
+        os.environ.get("QWEN_PROXY_REQUIRE_TOOL_CHOICE")
+        or dotenv.get("QWEN_PROXY_REQUIRE_TOOL_CHOICE")
+        or "1"
+    ).strip().lower()
+    ProxyHandler.require_initial_tool_choice = (
+        not args.no_required_tool_choice
+        and require_env not in {"0", "false", "no", "off"}
+    )
     server = ThreadingHTTPServer((args.host, args.port), ProxyHandler)
     print(f"qwen namespace proxy listening on http://{args.host}:{args.port}/v1", flush=True)
     print(f"upstream={upstream_base}", flush=True)
     print(f"upstream_auth={'bearer' if ProxyHandler.api_key else 'none'}", flush=True)
+    print(f"require_initial_tool_choice={ProxyHandler.require_initial_tool_choice}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

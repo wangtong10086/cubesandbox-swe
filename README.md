@@ -107,7 +107,7 @@ scripts/collect_cubesandbox_codex_swe50.py --help
 - [SWE-INFINITE Workflow](docs/swe-infinite-workflow.md)
 - [Configuration](docs/configuration.md)
 - [Hint-Invariant Evaluation](docs/hint-invariant-eval.md)
-- [Hint Sensitivity vs SWE Capability](docs/hint-sensitivity-capability.md)
+- [Hint Sensitivity vs SWE Capability](docs/hint-sensitivity-capability.md) cross-teacher analysis
 - [Hint-Invariant On-Policy Experiment](docs/hint-invariant-onpolicy-experiment.md)
 - [Hint-Invariant Full Experiment](docs/hint-invariant-full-experiment.md)
 - [Qwen + CubeSandbox Next Plan](docs/qwen-cubesandbox-next-plan.md)
