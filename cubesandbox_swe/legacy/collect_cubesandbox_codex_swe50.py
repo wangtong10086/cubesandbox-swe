@@ -31,6 +31,7 @@ R2_FETCH_TIMEOUT = 8
 
 
 manifest_lock = threading.Lock()
+INCOMPLETE_RESULT_STATUSES = {"started", "running", "missing"}
 
 
 def utc_now() -> str:
@@ -219,6 +220,14 @@ def status_from_result(result_path: Path) -> tuple[str, float | None, str]:
     return status, score, error
 
 
+def is_incomplete_result_status(status: str) -> bool:
+    return status in INCOMPLETE_RESULT_STATUSES
+
+
+def csv_set(value: str) -> set[str]:
+    return {item.strip() for item in value.split(",") if item.strip()}
+
+
 def standardize_outputs(run_dir: Path) -> dict[str, str]:
     paths: dict[str, str] = {}
     patterns = {
@@ -245,13 +254,51 @@ def standardize_outputs(run_dir: Path) -> dict[str, str]:
     return paths
 
 
+def copy_seeded_run(args: argparse.Namespace, job: dict[str, Any], manifest_path: Path) -> dict[str, Any]:
+    run_dir = Path(job["run_dir"])
+    source_run_dir = Path(job["source_run_dir"])
+    result_json = run_dir / "result.json"
+    if result_json.exists() and not args.force:
+        status, score, error = status_from_result(result_json)
+        final = {**job, "status": "skipped", "result_status": status, "score": score, "error": error}
+    else:
+        if run_dir.exists() and args.force:
+            shutil.rmtree(run_dir)
+        run_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source_run_dir, run_dir, dirs_exist_ok=True)
+        paths = standardize_outputs(run_dir)
+        status, score, error = status_from_result(Path(paths.get("result_json", result_json)))
+        final = {
+            **job,
+            "status": "copied",
+            "returncode": 0,
+            "elapsed_seconds": 0.0,
+            "result_status": status,
+            "score": score,
+            "error": error,
+            **paths,
+        }
+    with manifest_lock:
+        manifest = load_manifest(manifest_path)
+        manifest["runs"][job["job_key"]] = {
+            **final,
+            "finished_at": utc_now(),
+        }
+        save_manifest(manifest_path, manifest)
+    return final
+
+
 def run_one(args: argparse.Namespace, job: dict[str, Any], manifest_path: Path) -> dict[str, Any]:
+    if str(job.get("source_run_policy") or "").startswith("copied_"):
+        return copy_seeded_run(args, job, manifest_path)
+
     run_dir = Path(job["run_dir"])
     run_dir.mkdir(parents=True, exist_ok=True)
     result_json = run_dir / "result.json"
     if result_json.exists() and not args.force:
         status, score, error = status_from_result(result_json)
-        return {**job, "status": "skipped", "result_status": status, "score": score, "error": error}
+        if not is_incomplete_result_status(status):
+            return {**job, "status": "skipped", "result_status": status, "score": score, "error": error}
 
     run_id = job["run_id"]
     cmd = [
@@ -275,8 +322,10 @@ def run_one(args: argparse.Namespace, job: dict[str, Any], manifest_path: Path) 
         str(args.verify_timeout),
         "--codex-location",
         "sandbox",
+        "--max-solve-attempts",
+        str(getattr(args, "max_solve_attempts", 1)),
         "--max-verify-attempts",
-        "1",
+        str(getattr(args, "max_verify_attempts", 1)),
         "--model-preflight-timeout",
         str(args.model_preflight_timeout),
         "--output-dir",
@@ -370,6 +419,59 @@ def build_jobs(args: argparse.Namespace, images: list[dict[str, Any]], templates
     return jobs
 
 
+def build_jobs_from_seed_manifest(args: argparse.Namespace) -> list[dict[str, Any]]:
+    seed = load_json(args.seed_manifest, {})
+    source_runs = seed.get("runs") if isinstance(seed.get("runs"), dict) else {}
+    rerun_statuses = csv_set(args.rerun_result_status)
+    copy_statuses = csv_set(args.copy_result_status)
+    overlap = rerun_statuses & copy_statuses
+    if overlap:
+        raise RuntimeError(f"statuses cannot be both rerun and copied: {sorted(overlap)}")
+    if not rerun_statuses and not copy_statuses:
+        raise RuntimeError("--seed-manifest requires --rerun-result-status or --copy-result-status")
+
+    jobs: list[dict[str, Any]] = []
+    for job_key, source in sorted(source_runs.items()):
+        result_status = str(source.get("result_status") or "")
+        if result_status in copy_statuses:
+            policy = "copied_success" if result_status == "ok" else "copied_model_error"
+        elif result_status in rerun_statuses:
+            policy = "rerun_failure"
+        else:
+            continue
+        task_id = source.get("task_id")
+        rep = source.get("rep")
+        if task_id is None or rep is None:
+            continue
+        run_id = str(source.get("run_id") or "")
+        if policy == "rerun_failure":
+            run_id = f"task{task_id}_rep{rep}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}_{uuid.uuid4().hex[:8]}"
+        jobs.append({
+            "job_key": str(job_key),
+            "task_id": task_id,
+            "instance_id": source.get("instance_id") or f"task-{task_id}",
+            "image": source.get("image") or "",
+            "template_id": source.get("template_id"),
+            "task_json": source.get("task_json"),
+            "rep": rep,
+            "run_id": run_id,
+            "run_dir": str(args.output_root / "runs" / str(task_id) / f"rep_{rep}"),
+            "source_run_dir": source.get("run_dir"),
+            "source_result_status": result_status,
+            "source_run_policy": policy,
+            "source_manifest": str(args.seed_manifest),
+        })
+    missing = [job for job in jobs if not job.get("template_id") or not job.get("task_json")]
+    if missing:
+        raise RuntimeError(f"{len(missing)} seeded jobs are missing template_id or task_json")
+    missing_sources = [
+        job for job in jobs if str(job.get("source_run_policy") or "").startswith("copied_") and not job.get("source_run_dir")
+    ]
+    if missing_sources:
+        raise RuntimeError(f"{len(missing_sources)} copied seeded jobs are missing source_run_dir")
+    return jobs
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--images-json", type=Path, default=DEFAULT_IMAGES_PATH)
@@ -383,12 +485,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resolve-only", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--force", action="store_true")
+    parser.add_argument("--seed-manifest", type=Path, default=None)
+    parser.add_argument("--rerun-result-status", default="")
+    parser.add_argument("--copy-result-status", default="")
     parser.add_argument("--model", default=os.environ.get("OPENAI_MODEL", "gpt-5.5"))
     parser.add_argument("--reasoning-effort", default="medium")
     parser.add_argument("--wire-api", default="responses")
     parser.add_argument("--solve-timeout", type=int, default=1800)
     parser.add_argument("--verify-timeout", type=int, default=1800)
     parser.add_argument("--run-timeout", type=int, default=4200)
+    parser.add_argument("--max-solve-attempts", type=int, default=1)
+    parser.add_argument("--max-verify-attempts", type=int, default=1)
     parser.add_argument("--skip-model-preflight", action="store_true")
     parser.add_argument("--model-preflight-timeout", type=int, default=90)
     parser.add_argument("--codex-http-proxy", default=os.environ.get("SWE_INFINITE_CODEX_HTTP_PROXY", ""))
@@ -404,21 +511,33 @@ def main() -> int:
     manifest_path = args.output_root / "manifest.json"
     args.output_root.mkdir(parents=True, exist_ok=True)
 
-    images = selected_images(args.images_json, args.limit)
-    if len(images) != args.limit:
-        raise RuntimeError(f"selected {len(images)} images, expected {args.limit}")
-    templates = ready_templates(args.templates_json)
-    missing_templates = [item["image"] for item in images if item["image"] not in templates]
-    if missing_templates:
-        raise RuntimeError(f"{len(missing_templates)} images do not have READY templates: {missing_templates[:5]}")
+    if args.seed_manifest:
+        jobs = build_jobs_from_seed_manifest(args)
+        images_json = ""
+        templates_json = ""
+        resolved_task_count = len({str(job["task_id"]) for job in jobs})
+    else:
+        images = selected_images(args.images_json, args.limit)
+        if len(images) != args.limit:
+            raise RuntimeError(f"selected {len(images)} images, expected {args.limit}")
+        templates = ready_templates(args.templates_json)
+        missing_templates = [item["image"] for item in images if item["image"] not in templates]
+        if missing_templates:
+            raise RuntimeError(f"{len(missing_templates)} images do not have READY templates: {missing_templates[:5]}")
 
-    tasks = resolve_tasks(images, tasks_dir, args.scan_max, args.resolver_workers)
-    jobs = build_jobs(args, images, templates, tasks)
+        tasks = resolve_tasks(images, tasks_dir, args.scan_max, args.resolver_workers)
+        jobs = build_jobs(args, images, templates, tasks)
+        images_json = str(args.images_json)
+        templates_json = str(args.templates_json)
+        resolved_task_count = len(tasks)
     manifest = load_manifest(manifest_path)
     manifest.update({
         "output_root": str(args.output_root),
-        "images_json": str(args.images_json),
-        "templates_json": str(args.templates_json),
+        "images_json": images_json,
+        "templates_json": templates_json,
+        "seed_manifest": str(args.seed_manifest) if args.seed_manifest else "",
+        "rerun_result_status": args.rerun_result_status,
+        "copy_result_status": args.copy_result_status,
         "limit": args.limit,
         "repeats": args.repeats,
         "concurrency": args.concurrency,
@@ -427,11 +546,13 @@ def main() -> int:
         "wire_api": args.wire_api,
         "skip_model_preflight": args.skip_model_preflight,
         "model_preflight_timeout": args.model_preflight_timeout,
+        "max_solve_attempts": args.max_solve_attempts,
+        "max_verify_attempts": args.max_verify_attempts,
         "total_jobs": len(jobs),
     })
     save_manifest(manifest_path, manifest)
 
-    print(f"resolved_tasks={len(tasks)} jobs={len(jobs)} concurrency={args.concurrency}", flush=True)
+    print(f"resolved_tasks={resolved_task_count} jobs={len(jobs)} concurrency={args.concurrency}", flush=True)
     if args.resolve_only or args.dry_run:
         for job in jobs[: min(10, len(jobs))]:
             print(json.dumps(job, ensure_ascii=False), flush=True)
@@ -453,7 +574,7 @@ def main() -> int:
                     manifest = load_manifest(manifest_path)
                     manifest["runs"][job["job_key"]] = {**result, "finished_at": utc_now()}
                     save_manifest(manifest_path, manifest)
-            if result.get("status") not in {"done", "skipped"}:
+            if result.get("status") not in {"done", "skipped", "copied"}:
                 failures += 1
             print(
                 f"[{done:03d}/{len(jobs)}] task={job['task_id']} rep={job['rep']} "

@@ -24,7 +24,9 @@ DEFAULT_TIMEOUT = 120
 MAX_TEXT_BYTES = 64 * 1024
 CUBECLI_EXIT_RE = re.compile(r"(?:\n)?cubecli run fail: exec failed with exit code (\d+)\n?$")
 WRITE_CHUNK_BYTES = 48 * 1024
-READ_CHUNK_BYTES = 32
+READ_CHUNK_BYTES = 4 * 1024
+CODEX_PATCH_BEGIN = "*** Begin Patch"
+CODEX_PATCH_END = "*** End Patch"
 
 
 class CubeSandboxRuntimeError(RuntimeError):
@@ -93,6 +95,251 @@ def clean_pty_output(data: bytes) -> str:
         .replace(b"\r", b"\n")
     )
     return cleaned.decode("utf-8", errors="replace")
+
+
+def codex_patch_to_git_diff(patch: str) -> str:
+    """Convert Codex ``*** Begin Patch`` update/add hunks into a git diff."""
+    if not is_codex_patch(patch):
+        return patch
+    lines, index = codex_patch_body(patch)
+
+    out: list[str] = []
+    while index < len(lines):
+        line = lines[index]
+        stripped = line.strip()
+        if stripped == CODEX_PATCH_END:
+            break
+        if stripped == "*** End of File":
+            index += 1
+            continue
+
+        if line.startswith("*** Update File: "):
+            path = line.split(":", 1)[1].strip()
+            if not path:
+                raise CubeSandboxRuntimeError("update file path is empty")
+            out.extend([f"diff --git a/{path} b/{path}", f"--- a/{path}", f"+++ b/{path}"])
+            index += 1
+            while index < len(lines):
+                current = lines[index]
+                current_stripped = current.strip()
+                if current.startswith("*** "):
+                    if current_stripped == "*** End of File":
+                        index += 1
+                        continue
+                    break
+                out.append(current)
+                index += 1
+            continue
+
+        if line.startswith("*** Add File: "):
+            path = line.split(":", 1)[1].strip()
+            if not path:
+                raise CubeSandboxRuntimeError("add file path is empty")
+            body: list[str] = []
+            index += 1
+            while index < len(lines):
+                current = lines[index]
+                if current.startswith("*** "):
+                    break
+                if not current.startswith("+"):
+                    raise CubeSandboxRuntimeError(f"add file line must start with '+': {current[:80]}")
+                body.append(current)
+                index += 1
+            out.extend(
+                [
+                    f"diff --git a/{path} b/{path}",
+                    "new file mode 100644",
+                    "--- /dev/null",
+                    f"+++ b/{path}",
+                    f"@@ -0,0 +1,{len(body)} @@",
+                    *body,
+                ]
+            )
+            continue
+
+        if line.startswith("*** Delete File: ") or line.startswith("*** Move to: "):
+            raise CubeSandboxRuntimeError(f"unsupported Codex patch operation: {line}")
+
+        raise CubeSandboxRuntimeError(f"unsupported Codex patch line: {line[:80]}")
+
+    if not out:
+        raise CubeSandboxRuntimeError("Codex patch did not contain any file hunks")
+    return "\n".join(out).rstrip("\n") + "\n"
+
+
+def is_codex_patch(patch: str) -> bool:
+    for raw in patch.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        return (
+            line == CODEX_PATCH_BEGIN
+            or raw.startswith("*** Update File: ")
+            or raw.startswith("*** Add File: ")
+        )
+    return False
+
+
+def codex_patch_body(patch: str) -> tuple[list[str], int]:
+    lines = patch.splitlines()
+    if not lines:
+        raise CubeSandboxRuntimeError("patch is empty")
+    if lines[0].strip() == CODEX_PATCH_BEGIN:
+        return lines, 1
+    return lines, 0
+
+
+def parse_codex_patch(patch: str) -> list[dict[str, Any]]:
+    lines, index = codex_patch_body(patch)
+    operations: list[dict[str, Any]] = []
+    while index < len(lines):
+        line = lines[index]
+        stripped = line.strip()
+        if stripped == CODEX_PATCH_END:
+            break
+        if stripped == "*** End of File":
+            index += 1
+            continue
+
+        if line.startswith("*** Update File: "):
+            path = line.split(":", 1)[1].strip()
+            if not path:
+                raise CubeSandboxRuntimeError("update file path is empty")
+            hunks: list[list[str]] = []
+            hunk: list[str] = []
+            index += 1
+            while index < len(lines):
+                current = lines[index]
+                current_stripped = current.strip()
+                if current.startswith("*** "):
+                    if current_stripped == "*** End of File":
+                        index += 1
+                        continue
+                    break
+                if current.startswith("@@"):
+                    if hunk:
+                        hunks.append(hunk)
+                    hunk = []
+                else:
+                    hunk.append(current)
+                index += 1
+            if hunk:
+                hunks.append(hunk)
+            if not hunks:
+                raise CubeSandboxRuntimeError(f"update file has no hunks: {path}")
+            operations.append({"op": "update", "path": path, "hunks": hunks})
+            continue
+
+        if line.startswith("*** Add File: "):
+            path = line.split(":", 1)[1].strip()
+            if not path:
+                raise CubeSandboxRuntimeError("add file path is empty")
+            body: list[str] = []
+            index += 1
+            while index < len(lines):
+                current = lines[index]
+                if current.startswith("*** "):
+                    break
+                if not current.startswith("+"):
+                    raise CubeSandboxRuntimeError(f"add file line must start with '+': {current[:80]}")
+                body.append(current[1:])
+                index += 1
+            operations.append({"op": "add", "path": path, "body": body})
+            continue
+
+        if line.startswith("*** Delete File: ") or line.startswith("*** Move to: "):
+            raise CubeSandboxRuntimeError(f"unsupported Codex patch operation: {line}")
+        raise CubeSandboxRuntimeError(f"unsupported Codex patch line: {line[:80]}")
+    if not operations:
+        raise CubeSandboxRuntimeError("Codex patch did not contain any file operations")
+    return operations
+
+
+def apply_codex_update_hunks(text: str, hunks: list[list[str]], path: str) -> str:
+    had_final_newline = text.endswith("\n")
+    lines = text.splitlines()
+    for hunk in hunks:
+        old_lines: list[str] = []
+        new_lines: list[str] = []
+        for raw in hunk:
+            if raw == r"\ No newline at end of file":
+                continue
+            if not raw:
+                raise CubeSandboxRuntimeError(f"malformed empty patch line in {path}")
+            marker = raw[0]
+            content = raw[1:]
+            if marker == " ":
+                old_lines.append(content)
+                new_lines.append(content)
+            elif marker == "-":
+                old_lines.append(content)
+            elif marker == "+":
+                new_lines.append(content)
+            else:
+                raise CubeSandboxRuntimeError(f"malformed patch line in {path}: {raw[:80]}")
+        if not old_lines:
+            raise CubeSandboxRuntimeError(f"update hunk has no removable/context lines: {path}")
+        variants = [(old_lines, new_lines)]
+        if old_lines and old_lines[-1] == "":
+            trimmed_new = new_lines[:-1] if new_lines and new_lines[-1] == "" else new_lines
+            variants.append((old_lines[:-1], trimmed_new))
+        for candidate_old, candidate_new in variants:
+            for start in range(0, len(lines) - len(candidate_old) + 1):
+                if lines[start : start + len(candidate_old)] == candidate_old:
+                    lines[start : start + len(candidate_old)] = candidate_new
+                    break
+            else:
+                continue
+            break
+        else:
+            preview = "\\n".join(old_lines[:5])
+            raise CubeSandboxRuntimeError(f"update hunk did not match {path}: {preview[:300]}")
+    return "\n".join(lines) + ("\n" if had_final_newline else "")
+
+
+def parse_unified_diff_patch(patch: str) -> list[dict[str, Any]]:
+    operations: list[dict[str, Any]] = []
+    path: str | None = None
+    hunks: list[list[str]] = []
+    hunk: list[str] | None = None
+
+    def flush() -> None:
+        nonlocal path, hunks, hunk
+        if hunk is not None:
+            hunks.append(hunk)
+            hunk = None
+        if path and hunks:
+            operations.append({"op": "update", "path": path, "hunks": hunks})
+        path = None
+        hunks = []
+
+    for line in patch.splitlines():
+        if line.startswith("diff --git "):
+            flush()
+            continue
+        if line.startswith("+++ "):
+            candidate = line[4:].strip()
+            if candidate != "/dev/null":
+                path = candidate[2:] if candidate.startswith("b/") else candidate
+            continue
+        if line.startswith("@@"):
+            if hunk is not None:
+                hunks.append(hunk)
+            hunk = []
+            continue
+        if hunk is not None:
+            if line == r"\ No newline at end of file":
+                hunk.append(line)
+            elif line.startswith((" ", "+", "-")):
+                hunk.append(line)
+            elif line == "":
+                hunk.append(" ")
+            else:
+                raise CubeSandboxRuntimeError(f"malformed unified diff line: {line[:80]}")
+    flush()
+    if not operations:
+        raise CubeSandboxRuntimeError("unified diff did not contain update hunks")
+    return operations
 
 
 class CubeSandboxExecutor:
@@ -180,6 +427,12 @@ class CubeSandboxExecutor:
     def apply_patch(self, patch: str) -> dict[str, Any]:
         if not patch.strip():
             raise CubeSandboxRuntimeError("patch is empty")
+        if is_codex_patch(patch):
+            try:
+                return self.apply_codex_patch(patch)
+            except CubeSandboxRuntimeError as exc:
+                return {"exit_code": 1, "stdout": "", "stderr": str(exc)}
+        patch = codex_patch_to_git_diff(patch)
         payload = base64.b64encode(patch.encode("utf-8")).decode("ascii")
         command = (
             "tmp=$(mktemp /tmp/cubesandbox-patch.XXXXXX.diff) && "
@@ -187,7 +440,52 @@ class CubeSandboxExecutor:
             "git apply --recount --whitespace=fix \"$tmp\"; "
             "rc=$?; rm -f \"$tmp\"; exit \"$rc\""
         )
-        return self.run(command, timeout=self.default_timeout)
+        result = self.run(command, timeout=self.default_timeout)
+        if result["exit_code"] == 0:
+            return result
+        try:
+            return self.apply_unified_diff_patch(patch)
+        except CubeSandboxRuntimeError as exc:
+            result["stderr"] = (result.get("stderr") or "") + f"unified diff fallback failed: {exc}\n"
+            return result
+
+    def apply_codex_patch(self, patch: str) -> dict[str, Any]:
+        touched: list[str] = []
+        for operation in parse_codex_patch(patch):
+            safe_path = normalize_app_path(str(operation["path"]), self.workdir)
+            if operation["op"] == "add":
+                text = "\n".join(operation["body"]) + "\n"
+                self.write_text_file(safe_path, text)
+                touched.append(safe_path)
+            elif operation["op"] == "update":
+                original = self.read_text_file(safe_path)
+                updated = apply_codex_update_hunks(original, operation["hunks"], safe_path)
+                self.write_text_file(safe_path, updated)
+                touched.append(safe_path)
+            else:
+                raise CubeSandboxRuntimeError(f"unsupported Codex patch operation: {operation['op']}")
+        return {
+            "exit_code": 0,
+            "stdout": "applied Codex patch to " + ", ".join(touched) + "\n",
+            "stderr": "",
+        }
+
+    def apply_unified_diff_patch(self, patch: str) -> dict[str, Any]:
+        touched: list[str] = []
+        for operation in parse_unified_diff_patch(patch):
+            if operation["op"] != "update":
+                raise CubeSandboxRuntimeError(f"unsupported unified diff operation: {operation['op']}")
+            safe_path = normalize_app_path(str(operation["path"]), self.workdir)
+            original = self.read_text_file(safe_path)
+            updated = apply_codex_update_hunks(original, operation["hunks"], safe_path)
+            self.write_text_file(safe_path, updated)
+            touched.append(safe_path)
+        return {
+            "exit_code": 0,
+            "stdout": "applied unified diff fallback to " + ", ".join(touched) + "\n",
+            "stderr": "",
+        }
+
 
     def write_text_file(self, path: str, text: str, *, mode: int = 0o644) -> None:
         safe_path = normalize_absolute_path(path)

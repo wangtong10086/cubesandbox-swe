@@ -333,6 +333,59 @@ def build_cubesandbox_runtime_prompt(base_prompt: str) -> str:
     )
 
 
+def solve_attempt_paths(run_dir: Path, attempt: int) -> dict[str, Path]:
+    if attempt == 1:
+        return {
+            "prompt": run_dir / "prompt.txt",
+            "stdout": run_dir / "codex_stdout.jsonl",
+            "stderr": run_dir / "codex_stderr.log",
+        }
+    return {
+        "prompt": run_dir / f"feedback_{attempt}.txt",
+        "stdout": run_dir / f"codex_retry_{attempt}_stdout.jsonl",
+        "stderr": run_dir / f"codex_retry_{attempt}_stderr.log",
+    }
+
+
+def build_retry_prompt(base_prompt: str, feedback: str | None) -> str:
+    prompt = build_cubesandbox_runtime_prompt(base_prompt)
+    if not feedback:
+        return prompt
+    return (
+        f"{prompt}\n\n"
+        "## Previous Attempt Feedback\n\n"
+        f"{feedback.strip()}\n\n"
+        "You are retrying from a clean sandbox. Produce a source-code patch in this attempt. "
+        "Before finishing, call cube_apply_patch and then cube_diff."
+    )
+
+
+def no_patch_feedback(attempt_summary: dict[str, Any]) -> str:
+    agent = attempt_summary.get("agent_result") or {}
+    reason = "the previous attempt did not leave a source patch"
+    if agent.get("codex_timed_out"):
+        reason = f"the previous attempt timed out after {agent.get('solve_timeout_seconds')} seconds without a usable patch"
+    return (
+        f"{reason}. On the retry, inspect only the most relevant source files, avoid broad repository reads, "
+        "apply a minimal patch with cube_apply_patch, and inspect cube_diff before the final response."
+    )
+
+
+def verify_feedback(verify_result: dict[str, Any], patch: str) -> str:
+    summary = {
+        "status": verify_result.get("status"),
+        "score": verify_result.get("score"),
+        "test_stats": verify_result.get("test_stats"),
+    }
+    patch_excerpt = patch[:4000]
+    return (
+        "The previous patch did not pass verification.\n\n"
+        f"Verifier summary:\n{json.dumps(summary, indent=2, ensure_ascii=False)}\n\n"
+        f"Previous patch excerpt:\n{patch_excerpt}\n\n"
+        "Retry with a corrected, minimal source-only patch. Do not edit tests or config unless the task explicitly requires it."
+    )
+
+
 def prepare_cubesandbox_runtime(executor: CubeSandboxExecutor) -> None:
     from utils import NETWORK_BLOCKLIST_SCRIPT, NORMALIZE_TIMESTAMPS_SCRIPT, SANITIZE_GIT_SCRIPT
 
@@ -349,7 +402,7 @@ def prepare_cubesandbox_runtime(executor: CubeSandboxExecutor) -> None:
     executor.run(f"({NORMALIZE_TIMESTAMPS_SCRIPT}) >/tmp/swe_normalize.log 2>&1 || true", timeout=180)
 
 
-def solve_cubesandbox_runtime(args: argparse.Namespace) -> dict:
+def solve_cubesandbox_runtime(args: argparse.Namespace, *, attempt: int = 1, feedback: str | None = None) -> dict:
     from cubesandbox import Sandbox
 
     task = json.loads(Path(args.task_json).read_text(encoding="utf-8"))
@@ -359,11 +412,12 @@ def solve_cubesandbox_runtime(args: argparse.Namespace) -> dict:
         raise RuntimeError("codex CLI was not found on PATH")
 
     run_dir = RUNS_DIR / f"cube-codex-{args.run_id}"
-    control_dir = run_dir / "control"
-    codex_home = run_dir / "codex_home"
-    run_dir.mkdir(parents=True)
-    control_dir.mkdir()
-    codex_home.mkdir()
+    control_dir = run_dir / "control" if attempt == 1 else run_dir / f"control_attempt_{attempt}"
+    codex_home = run_dir / "codex_home" if attempt == 1 else run_dir / f"codex_home_attempt_{attempt}"
+    paths = solve_attempt_paths(run_dir, attempt)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    control_dir.mkdir(exist_ok=True)
+    codex_home.mkdir(exist_ok=True)
 
     sandbox = Sandbox.create(template=args.solve_template, timeout=args.solve_timeout + 300)
     try:
@@ -383,35 +437,47 @@ def solve_cubesandbox_runtime(args: argparse.Namespace) -> dict:
             task.get("test_command", ""),
             task.get("fail_to_pass"),
         )
-        prompt = build_cubesandbox_runtime_prompt(base_prompt)
-        (run_dir / "prompt.txt").write_text(prompt, encoding="utf-8")
+        prompt = build_retry_prompt(base_prompt, feedback)
+        paths["prompt"].write_text(prompt, encoding="utf-8")
         write_codex_config(codex_home, args, api_base, sandbox_id=sandbox.sandbox_id)
         env = codex_process_env(args, api_key, codex_home)
-        proc = subprocess.run(
-            [
-                codex_path,
-                "--ask-for-approval",
-                "never",
-                "exec",
-                "--sandbox",
-                "read-only",
-                "--skip-git-repo-check",
-                "--ephemeral",
-                "--ignore-rules",
-                "--json",
-                "-",
-            ],
-            cwd=control_dir,
-            input=prompt,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=args.solve_timeout,
-            env=env,
-        )
-        (run_dir / "codex_stdout.jsonl").write_text(proc.stdout, encoding="utf-8")
-        (run_dir / "codex_stderr.log").write_text(proc.stderr, encoding="utf-8")
-        total_tokens, model_calls, conversation, last_error = parse_codex_json_output(proc.stdout)
+        timed_out = False
+        returncode: int | None = None
+        stdout = ""
+        stderr = ""
+        try:
+            proc = subprocess.run(
+                [
+                    codex_path,
+                    "--ask-for-approval",
+                    "never",
+                    "exec",
+                    "--sandbox",
+                    "read-only",
+                    "--skip-git-repo-check",
+                    "--ephemeral",
+                    "--ignore-rules",
+                    "--json",
+                    "-",
+                ],
+                cwd=control_dir,
+                input=prompt,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=args.solve_timeout,
+                env=env,
+            )
+            stdout = proc.stdout
+            stderr = proc.stderr
+            returncode = proc.returncode
+        except subprocess.TimeoutExpired as exc:
+            timed_out = True
+            stdout = stringify_process_output(exc.stdout)
+            stderr = stringify_process_output(exc.stderr)
+        paths["stdout"].write_text(stdout, encoding="utf-8")
+        paths["stderr"].write_text(stderr, encoding="utf-8")
+        total_tokens, model_calls, conversation, last_error = parse_codex_json_output(stdout)
         conversation.insert(0, {"role": "user", "content": prompt})
 
         diff = executor.diff(DEFAULT_DIFF_FILTER)
@@ -422,8 +488,15 @@ def solve_cubesandbox_runtime(args: argparse.Namespace) -> dict:
             patch = patch.rstrip("\n") + "\n"
 
         error = None
-        if proc.returncode != 0:
-            error = f"codex_error: exit {proc.returncode}: {last_error or (proc.stderr or proc.stdout)[:500]}"
+        if timed_out:
+            timeout_detail = last_error or stderr or stdout
+            timeout_detail = timeout_detail.strip().replace("\n", " ")[:500]
+            reason = "codex_timeout_after_patch" if patch.strip() else "codex_timeout_no_patch"
+            error = f"{reason}: timed out after {args.solve_timeout}s"
+            if timeout_detail:
+                error = f"{error}: {timeout_detail}"
+        elif returncode != 0:
+            error = f"codex_error: exit {returncode}: {last_error or (stderr or stdout)[:500]}"
         if diff["exit_code"] != 0:
             error = f"cube_diff_error: {diff['stderr'] or diff['stdout']}"
         return {
@@ -431,10 +504,15 @@ def solve_cubesandbox_runtime(args: argparse.Namespace) -> dict:
             "agent_result": {
                 "success": bool(patch),
                 "error": error,
+                "attempt": attempt,
                 "model_calls": model_calls,
                 "total_tokens": total_tokens,
                 "patch": patch,
                 "conversation_items": len(conversation),
+                "codex_timed_out": timed_out,
+                "solve_timeout_seconds": args.solve_timeout if timed_out else None,
+                "partial_events_count": len(conversation) - 1,
+                "returncode": returncode,
                 "run_location": "cubesandbox-mcp",
                 "run_dir": str(run_dir),
                 "sandbox_id": sandbox.sandbox_id,
@@ -489,22 +567,13 @@ def read_jsonl_if_exists(path: Path) -> list[dict[str, Any]]:
 
 
 def trajectory_attempt_paths(run_dir: Path, attempt: int) -> dict[str, Path]:
-    if attempt == 1:
-        return {
-            "prompt": run_dir / "prompt.txt",
-            "stdout": run_dir / "codex_stdout.jsonl",
-            "stderr": run_dir / "codex_stderr.log",
-        }
-    prompt = run_dir / f"feedback_{attempt}.txt"
+    paths = solve_attempt_paths(run_dir, attempt)
+    prompt = paths["prompt"]
     if not prompt.exists():
         matches = sorted(run_dir.glob(f"feedback_{attempt}*.txt"))
         if matches:
             prompt = matches[0]
-    return {
-        "prompt": prompt,
-        "stdout": run_dir / f"codex_retry_{attempt}_stdout.jsonl",
-        "stderr": run_dir / f"codex_retry_{attempt}_stderr.log",
-    }
+    return {**paths, "prompt": prompt}
 
 
 def build_trajectory(result: dict[str, Any], task: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -716,6 +785,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--codex-location", choices=["sandbox"], default="sandbox")
     parser.add_argument("--skip-model-preflight", action="store_true")
     parser.add_argument("--model-preflight-timeout", type=int, default=90)
+    parser.add_argument("--max-solve-attempts", type=int, default=1)
     parser.add_argument("--max-verify-attempts", type=int, default=1)
     parser.add_argument("--output-dir", default=str(DEFAULT_RESULTS_DIR))
     parser.add_argument("--runs-dir", default=str(DEFAULT_RUNS_DIR))
@@ -751,6 +821,8 @@ def main() -> int:
         "runtime": "cubesandbox-mcp",
         "skip_model_preflight": args.skip_model_preflight,
         "model_preflight_timeout": args.model_preflight_timeout,
+        "max_solve_attempts": args.max_solve_attempts,
+        "max_verify_attempts": args.max_verify_attempts,
         "rollout_miner_hotkey": args.rollout_miner_hotkey,
         "rollout_model_revision": args.rollout_model_revision,
         "rollout_model": args.rollout_model,
@@ -762,65 +834,73 @@ def main() -> int:
         ensure_runtime_allowed(args)
         if not args.skip_model_preflight:
             result["model_preflight"] = preflight_codex_model(args)
-        solved = solve_cubesandbox_runtime(args)
-        solved_task = solved["task"]
-        patch = solved["agent_result"].pop("patch")
-        patch_path = RESULTS_DIR / f"cubesandbox_codex_fix_patch_{run_id}_attempt1.diff"
-        patch_path.write_text(patch, encoding="utf-8")
-        result.update({
-            "instance_id": solved["task"].get("instance_id"),
-            "dockerhub_tag": solved["task"].get("dockerhub_tag"),
-            "agent_result": solved["agent_result"],
-            "fix_patch_path": str(patch_path),
-            "fix_patch_bytes": len(patch.encode("utf-8")),
-            "attempts": [],
-        })
-        if not patch.strip():
-            result["status"] = "no_patch"
-            result["attempts"].append({
-                "attempt": 1,
+        result["attempts"] = []
+        feedback: str | None = None
+        real_verify_attempts = 0
+        return_code = 1
+        max_solve_attempts = max(1, int(args.max_solve_attempts))
+        max_verify_attempts = max(1, int(args.max_verify_attempts))
+        for solve_attempt in range(1, max_solve_attempts + 1):
+            solved = solve_cubesandbox_runtime(args, attempt=solve_attempt, feedback=feedback)
+            solved_task = solved["task"]
+            patch = solved["agent_result"].pop("patch")
+            patch_path = RESULTS_DIR / f"cubesandbox_codex_fix_patch_{run_id}_attempt{solve_attempt}.diff"
+            patch_path.write_text(patch, encoding="utf-8")
+            agent_result = solved["agent_result"]
+            result.update({
+                "instance_id": solved["task"].get("instance_id"),
+                "dockerhub_tag": solved["task"].get("dockerhub_tag"),
+                "agent_result": agent_result,
                 "fix_patch_path": str(patch_path),
-                "fix_patch_bytes": 0,
-                "agent_result": result["agent_result"],
+                "fix_patch_bytes": len(patch.encode("utf-8")),
+            })
+            attempt_summary = {
+                "attempt": solve_attempt,
+                "fix_patch_path": str(patch_path),
+                "fix_patch_bytes": len(patch.encode("utf-8")),
+                "agent_result": agent_result,
                 "verify_result_file": None,
-                "verify": {
+                "verify": None,
+            }
+            if not patch.strip():
+                failure_reason = "codex_timeout_no_patch" if agent_result.get("codex_timed_out") else "no_patch_generated"
+                attempt_summary["verify"] = {
                     "status": "no_patch",
                     "score": 0.0,
-                    "test_stats": {"failure_reason": "no_patch_generated"},
+                    "test_stats": {"failure_reason": failure_reason},
                     "state_after_save": None,
                     "state_after_restore": None,
-                },
-            })
-            result["verify"] = result["attempts"][-1]["verify"]
-            return_code = 1
-        else:
-            verify_result = None
-            current_agent_result = result["agent_result"]
-            for attempt in range(1, args.max_verify_attempts + 1):
-                verify_result = verify(args, patch_path)
-                attempt_summary = {
-                    "attempt": attempt,
-                    "fix_patch_path": str(patch_path),
-                    "fix_patch_bytes": len(patch.encode("utf-8")),
-                    "agent_result": current_agent_result,
-                    "verify_result_file": verify_result.get("result_file"),
-                    "verify": {
-                        "status": verify_result.get("status"),
-                        "score": verify_result.get("score"),
-                        "test_stats": verify_result.get("test_stats"),
-                        "state_after_save": verify_result.get("state_after_save"),
-                        "state_after_restore": verify_result.get("state_after_restore"),
-                    },
                 }
                 result["attempts"].append(attempt_summary)
-                if verify_result.get("status") == "ok":
-                    break
+                result["verify"] = attempt_summary["verify"]
+                result["status"] = "no_patch"
+                if solve_attempt < max_solve_attempts:
+                    feedback = no_patch_feedback(attempt_summary)
+                    continue
                 break
 
-            result["verify_result_file"] = verify_result.get("result_file") if verify_result else None
-            result["verify"] = result["attempts"][-1]["verify"] if result["attempts"] else None
-            result["status"] = "ok" if verify_result and verify_result.get("status") == "ok" else "failed"
-            return_code = 0 if result["status"] == "ok" else 1
+            verify_result = verify(args, patch_path)
+            real_verify_attempts += 1
+            attempt_summary["verify_result_file"] = verify_result.get("result_file")
+            attempt_summary["verify"] = {
+                "status": verify_result.get("status"),
+                "score": verify_result.get("score"),
+                "test_stats": verify_result.get("test_stats"),
+                "state_after_save": verify_result.get("state_after_save"),
+                "state_after_restore": verify_result.get("state_after_restore"),
+            }
+            result["attempts"].append(attempt_summary)
+            result["verify_result_file"] = verify_result.get("result_file")
+            result["verify"] = attempt_summary["verify"]
+            if verify_result.get("status") == "ok":
+                result["status"] = "ok"
+                return_code = 0
+                break
+            result["status"] = "failed"
+            if solve_attempt < max_solve_attempts and real_verify_attempts < max_verify_attempts:
+                feedback = verify_feedback(verify_result, patch)
+                continue
+            break
     except Exception as exc:
         import traceback
 

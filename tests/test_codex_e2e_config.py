@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +17,7 @@ def make_args(**overrides):
         "skip_model_preflight": False,
         "model_preflight_timeout": 10,
         "solve_timeout": 900,
+        "solve_template": "template",
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -158,3 +160,104 @@ def test_preflight_codex_model_reports_timeout(monkeypatch) -> None:
 def test_runtime_rejects_non_sandbox() -> None:
     with pytest.raises(RuntimeError, match="only the CubeSandbox MCP runtime"):
         e2e.ensure_runtime_allowed(make_args(codex_location="container"))
+
+
+def test_solve_cubesandbox_runtime_records_timeout_without_patch(monkeypatch, tmp_path) -> None:
+    task_json = tmp_path / "task.json"
+    task_json.write_text(
+        e2e.json.dumps(
+            {
+                "problem_statement": "Fix it",
+                "instance_id": "repo__issue-1",
+                "dockerhub_tag": "image",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class Sandbox:
+        sandbox_id = "sandbox-1"
+
+        @classmethod
+        def create(cls, **kwargs):
+            return cls()
+
+        def kill(self):
+            return None
+
+    class Executor:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def diff(self, *args, **kwargs):
+            return {"exit_code": 0, "stdout": "", "stderr": ""}
+
+    def fake_run(*args, **kwargs):
+        raise e2e.subprocess.TimeoutExpired(
+            cmd=args[0],
+            timeout=kwargs["timeout"],
+            output='{"type":"turn.started"}\n',
+            stderr="",
+        )
+
+    monkeypatch.setitem(sys.modules, "cubesandbox", SimpleNamespace(Sandbox=Sandbox))
+    monkeypatch.setattr(e2e, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(e2e, "model_credentials", lambda: ("http://127.0.0.1:18088/v1", "no-auth"))
+    monkeypatch.setattr(e2e.shutil, "which", lambda name: "/usr/local/bin/codex" if name == "codex" else None)
+    monkeypatch.setattr(e2e, "CubeSandboxExecutor", Executor)
+    monkeypatch.setattr(e2e, "prepare_cubesandbox_runtime", lambda executor: None)
+    monkeypatch.setattr(e2e.subprocess, "run", fake_run)
+    args = make_args(task_json=str(task_json), run_id="run", solve_timeout=5)
+
+    result = e2e.solve_cubesandbox_runtime(args)
+
+    agent = result["agent_result"]
+    assert agent["success"] is False
+    assert agent["codex_timed_out"] is True
+    assert agent["solve_timeout_seconds"] == 5
+    assert agent["error"].startswith("codex_timeout_no_patch")
+    assert agent["patch"] == ""
+    run_dir = tmp_path / "runs" / "cube-codex-run"
+    assert (run_dir / "codex_stdout.jsonl").read_text(encoding="utf-8") == '{"type":"turn.started"}\n'
+
+
+def test_solve_cubesandbox_runtime_keeps_timeout_patch(monkeypatch, tmp_path) -> None:
+    task_json = tmp_path / "task.json"
+    task_json.write_text(e2e.json.dumps({"problem_statement": "Fix it"}), encoding="utf-8")
+    patch = "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n"
+
+    class Sandbox:
+        sandbox_id = "sandbox-1"
+
+        @classmethod
+        def create(cls, **kwargs):
+            return cls()
+
+        def kill(self):
+            return None
+
+    class Executor:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def diff(self, *args, **kwargs):
+            return {"exit_code": 0, "stdout": patch, "stderr": ""}
+
+    def fake_run(*args, **kwargs):
+        raise e2e.subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs["timeout"], output="", stderr="")
+
+    monkeypatch.setitem(sys.modules, "cubesandbox", SimpleNamespace(Sandbox=Sandbox))
+    monkeypatch.setattr(e2e, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(e2e, "model_credentials", lambda: ("http://127.0.0.1:18088/v1", "no-auth"))
+    monkeypatch.setattr(e2e.shutil, "which", lambda name: "/usr/local/bin/codex" if name == "codex" else None)
+    monkeypatch.setattr(e2e, "CubeSandboxExecutor", Executor)
+    monkeypatch.setattr(e2e, "prepare_cubesandbox_runtime", lambda executor: None)
+    monkeypatch.setattr(e2e.subprocess, "run", fake_run)
+
+    result = e2e.solve_cubesandbox_runtime(make_args(task_json=str(task_json), run_id="run", solve_timeout=5))
+
+    agent = result["agent_result"]
+    assert agent["success"] is True
+    assert agent["codex_timed_out"] is True
+    assert agent["error"].startswith("codex_timeout_after_patch")
+    assert agent["patch"] == patch
