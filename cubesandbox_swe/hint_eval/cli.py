@@ -579,6 +579,10 @@ def online_result_record(payload: dict[str, Any], path: Path) -> dict[str, Any] 
     if instance_id is None:
         warnings.append("missing_instance_id")
     numeric_score = float(score) if isinstance(score, (int, float)) else None
+    source_fields = ["verify.score"] if numeric_score is not None else []
+    if numeric_score is None and is_model_failure_status(status, payload):
+        numeric_score = 0.0
+        source_fields = ["status_as_model_failure"]
     if numeric_score is None:
         warnings.append("missing_verify_score")
     return {
@@ -591,9 +595,43 @@ def online_result_record(payload: dict[str, Any], path: Path) -> dict[str, Any] 
         "status": status,
         "verify_status": verify.get("status") if isinstance(verify, dict) else None,
         "source_file": str(path),
-        "source_fields": ["verify.score"] if numeric_score is not None else [],
+        "source_fields": source_fields,
         "warnings": warnings,
     }
+
+
+def is_model_failure_status(status: Any, payload: dict[str, Any]) -> bool:
+    if status in {"no_patch", "failed"}:
+        return True
+    if status == "error":
+        return not is_known_infra_error(payload.get("error") or "")
+    return False
+
+
+def is_known_infra_error(error: Any) -> bool:
+    text = str(error or "").lower()
+    if not text:
+        return False
+    markers = (
+        "cubemaster returned error",
+        "network-agent",
+        "targon",
+        "bad gateway",
+        "http error 502",
+        "http 502",
+        "http error 503",
+        "http 503",
+        "http error 504",
+        "http 504",
+        "authenticationerror",
+        "unauthorized",
+        "forbidden",
+        "rate limit",
+        "connection refused",
+        "verifier crash",
+        "runner exception",
+    )
+    return any(marker in text for marker in markers)
 
 
 def verifier_payload(payload: dict[str, Any]) -> dict[str, Any]:

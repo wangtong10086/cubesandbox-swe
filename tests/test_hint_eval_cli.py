@@ -243,8 +243,60 @@ def test_export_online_results_and_ablate(tmp_path: Path) -> None:
     online_rows = [json.loads(line) for line in online.read_text(encoding="utf-8").splitlines()]
     by_task = {row["task_id"]: row for row in online_rows}
     assert by_task[11827]["resolved"] is True
-    assert by_task[11828]["score"] is None
-    assert "missing_verify_score" in by_task[11828]["warnings"]
+    assert by_task[11828]["score"] == 0.0
+    assert by_task[11828]["source_fields"] == ["status_as_model_failure"]
+    assert "missing_verify_score" not in by_task[11828]["warnings"]
+
+
+def test_export_online_results_classifies_model_and_infra_errors(tmp_path: Path) -> None:
+    model_error = tmp_path / "model_error_result.json"
+    model_error.write_text(
+        json.dumps(
+            {
+                "task_json": "results/swe50_trajectories/tasks/task_00000011829.json",
+                "instance_id": "example__model-error",
+                "model": "student-model",
+                "status": "error",
+                "error": "BadRequestError: context length exceeded for this model",
+            }
+        ),
+        encoding="utf-8",
+    )
+    infra_error = tmp_path / "infra_error_result.json"
+    infra_error.write_text(
+        json.dumps(
+            {
+                "task_json": "results/swe50_trajectories/tasks/task_00000011830.json",
+                "instance_id": "example__infra-error",
+                "model": "student-model",
+                "status": "error",
+                "error": "ApiError: CubeMaster returned error code 130547: network-agent tap timeout",
+            }
+        ),
+        encoding="utf-8",
+    )
+    online = tmp_path / "online.jsonl"
+    assert (
+        main(
+            [
+                "hint-eval",
+                "export",
+                "online-results",
+                "--input-glob",
+                str(tmp_path / "*error_result.json"),
+                "--output",
+                str(online),
+            ]
+        )
+        == 0
+    )
+    online_rows = [json.loads(line) for line in online.read_text(encoding="utf-8").splitlines()]
+    by_task = {row["task_id"]: row for row in online_rows}
+    assert by_task[11829]["score"] == 0.0
+    assert by_task[11829]["source_fields"] == ["status_as_model_failure"]
+    assert "missing_verify_score" not in by_task[11829]["warnings"]
+    assert by_task[11830]["score"] is None
+    assert "missing_verify_score" in by_task[11830]["warnings"]
 
     scores = tmp_path / "scores.jsonl"
     scores.write_text(
@@ -252,8 +304,8 @@ def test_export_online_results_and_ablate(tmp_path: Path) -> None:
             {
                 "schema_version": "hint_eval_score_v1",
                 "probe_id": "p1",
-                "task_id": 11827,
-                "instance_id": "sparfenyuk__mcp-proxy-2",
+                "task_id": 11829,
+                "instance_id": "example__model-error",
                 "model": "fake-model",
                 "scorer": "fake",
                 "cutpoint_type": "file_localization",
